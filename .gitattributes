@@ -1,0 +1,10 @@
+# Normalize all text to LF in the repo and on checkout.
+# Upstream vendor drops originate as LF and must stay that way
+# for clean-room provenance (byte-identical to the pinned upstream).
+* text=auto eol=lf
+
+# Treat compiled outputs as binary
+*.bin binary
+*.elf binary
+*.o   binary
+*.rom binary

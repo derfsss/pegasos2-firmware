@@ -1,0 +1,17 @@
+# Build artifacts
+build/*.o
+build/*.elf
+build/*.bin
+build/*.map
+build/*.lst
+build/*.d
+
+# Editor / OS cruft
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# QEMU test output
+test/out/
+test/*.log

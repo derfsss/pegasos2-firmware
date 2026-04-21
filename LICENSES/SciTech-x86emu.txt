@@ -1,0 +1,57 @@
+SciTech x86 Realmode Emulator Library license
+==============================================
+
+This license applies to all files under upstream/x86emu/, which
+were vendored from U-Boot 2015.d (the ACube Sam460 distribution)
+at drivers/bios_emulator/. Original copyright holders are
+SciTech Software, Inc., David Mosberger-Tang, Egbert Eich, and
+Freescale Semiconductor, Inc. (Jason Jin). U-Boot itself is
+GPL-2.0-or-later, but the bios_emulator driver carries its
+original SciTech permissive license, which is what we inherit.
+
+Full text reproduced verbatim from the per-file header:
+
+----------------------------------------------------------------
+/****************************************************************************
+*
+*                       Realmode X86 Emulator Library
+*
+*  Copyright (C) 2007 Freescale Semiconductor, Inc.
+*  Jason Jin <Jason.jin@freescale.com>
+*
+*               Copyright (C) 1991-2004 SciTech Software, Inc.
+*                    Copyright (C) David Mosberger-Tang
+*                      Copyright (C) 1999 Egbert Eich
+*
+*  ========================================================================
+*
+*  Permission to use, copy, modify, distribute, and sell this software and
+*  its documentation for any purpose is hereby granted without fee,
+*  provided that the above copyright notice appear in all copies and that
+*  both that copyright notice and this permission notice appear in
+*  supporting documentation, and that the name of the authors not be used
+*  in advertising or publicity pertaining to distribution of the software
+*  without specific, written prior permission.  The authors makes no
+*  representations about the suitability of this software for any purpose.
+*  It is provided "as is" without express or implied warranty.
+*
+*  THE AUTHORS DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE,
+*  INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS, IN NO
+*  EVENT SHALL THE AUTHORS BE LIABLE FOR ANY SPECIAL, INDIRECT OR
+*  CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF
+*  USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+*  OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+*  PERFORMANCE OF THIS SOFTWARE.
+*
+****************************************************************************/
+----------------------------------------------------------------
+
+Clean-room note
+---------------
+
+U-Boot is a Denx-led project (denx.de) with no lineage from the
+bPlan/CodeGen Pegasos II proprietary firmware. The x86emu library
+inside it derives from SciTech's 1996-era realmode emulator, which
+predates the Pegasos II by years. Vendoring it into this rewrite
+introduces no cross-contamination with the original Pegasos II
+binary.
