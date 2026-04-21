@@ -42,10 +42,15 @@ void uart_puts(uint32_t base, const char *s)
 	}
 }
 
-void uart_put_hex32(uint32_t base, uint32_t v)
+static const char hex_digits[] = "0123456789ABCDEF";
+
+static void put_hex_n(uint32_t base, uint32_t v, int nibbles)
 {
-	static const char hex[] = "0123456789ABCDEF";
 	int i;
-	for (i = 28; i >= 0; i -= 4)
-		uart_putc(base, hex[(v >> i) & 0xF]);
+	for (i = (nibbles - 1) * 4; i >= 0; i -= 4)
+		uart_putc(base, hex_digits[(v >> i) & 0xF]);
 }
+
+void uart_put_hex8 (uint32_t base, uint8_t  v) { put_hex_n(base, v, 2); }
+void uart_put_hex16(uint32_t base, uint16_t v) { put_hex_n(base, v, 4); }
+void uart_put_hex32(uint32_t base, uint32_t v) { put_hex_n(base, v, 8); }

@@ -17,6 +17,7 @@
 #include "uart16550.h"
 #include "mv64361.h"
 #include "vt8231.h"
+#include "pci_walker.h"
 
 static uint32_t read_pvr(void)
 {
@@ -67,7 +68,10 @@ void phase1_c_main(void)
 	uart_put_hex32(UART1_BASE, sp);
 	uart_puts(UART1_BASE, " (DRAM)\n");
 
-	uart_puts(UART1_BASE, "Phase 1 complete. Halting.\n");
+	uart_puts(UART1_BASE, "\nPCI enumeration:\n");
+	pci_walk();
+
+	uart_puts(UART1_BASE, "\nPhase 1 complete. Halting.\n");
 
 	for (;;)
 		;

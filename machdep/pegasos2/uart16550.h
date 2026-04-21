@@ -15,6 +15,8 @@
 void uart_init(uint32_t base);
 void uart_putc(uint32_t base, char c);
 void uart_puts(uint32_t base, const char *s);
+void uart_put_hex8 (uint32_t base, uint8_t  v);
+void uart_put_hex16(uint32_t base, uint16_t v);
 void uart_put_hex32(uint32_t base, uint32_t v);
 
 #endif

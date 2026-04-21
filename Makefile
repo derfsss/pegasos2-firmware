@@ -50,7 +50,8 @@ OBJS := \
     $(BUILD)/phase1.o \
     $(BUILD)/uart16550.o \
     $(BUILD)/mv64361.o \
-    $(BUILD)/vt8231.o
+    $(BUILD)/vt8231.o \
+    $(BUILD)/pci_walker.o
 
 FIRMWARE := $(BUILD)/firmware-raw.bin
 ELF      := $(BUILD)/firmware.elf

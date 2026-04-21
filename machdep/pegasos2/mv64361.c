@@ -57,6 +57,29 @@ void pci_cfg_write32(int host, uint8_t bus, uint8_t dev,
 	mv64361_write32(pci_cfg_data_reg(host), val);
 }
 
+uint16_t pci_cfg_read16(int host, uint8_t bus, uint8_t dev,
+			uint8_t fn, uint8_t reg)
+{
+	uint32_t v = pci_cfg_read32(host, bus, dev, fn, reg);
+	return (uint16_t)((v >> ((reg & 2) * 8)) & 0xFFFFu);
+}
+
+uint8_t pci_cfg_read8(int host, uint8_t bus, uint8_t dev,
+		      uint8_t fn, uint8_t reg)
+{
+	uint32_t v = pci_cfg_read32(host, bus, dev, fn, reg);
+	return (uint8_t)((v >> ((reg & 3) * 8)) & 0xFFu);
+}
+
+void pci_cfg_write8(int host, uint8_t bus, uint8_t dev,
+		    uint8_t fn, uint8_t reg, uint8_t val)
+{
+	uint32_t v = pci_cfg_read32(host, bus, dev, fn, reg);
+	unsigned shift = (unsigned)(reg & 3) * 8;
+	v = (v & ~(0xFFu << shift)) | ((uint32_t)val << shift);
+	pci_cfg_write32(host, bus, dev, fn, reg, v);
+}
+
 void mv64361_enable_pci0_io_window(void)
 {
 	/* Remap PCI-side base of the CPU 0xF8000000 window to PCI I/O 0

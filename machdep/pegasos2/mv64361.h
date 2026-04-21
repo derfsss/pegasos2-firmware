@@ -37,14 +37,20 @@ enum {
 uint32_t mv64361_read32(uint32_t offset);
 void     mv64361_write32(uint32_t offset, uint32_t val);
 
-/* 32-bit PCI configuration-space access routed through the
- * appropriate host bridge. Values on the PCI side are little-endian;
- * these helpers deliver a value whose byte-0 is at PCI cfg offset
- * `reg`. */
+/* PCI configuration-space access routed through the appropriate
+ * host bridge. Values on the PCI side are little-endian; uint32_t
+ * return values have byte-0 at PCI cfg offset `reg` in the LSB. */
 uint32_t pci_cfg_read32(int host, uint8_t bus, uint8_t dev,
 			uint8_t fn, uint8_t reg);
 void     pci_cfg_write32(int host, uint8_t bus, uint8_t dev,
 			 uint8_t fn, uint8_t reg, uint32_t val);
+
+uint16_t pci_cfg_read16(int host, uint8_t bus, uint8_t dev,
+			uint8_t fn, uint8_t reg);
+uint8_t  pci_cfg_read8 (int host, uint8_t bus, uint8_t dev,
+			uint8_t fn, uint8_t reg);
+void     pci_cfg_write8(int host, uint8_t bus, uint8_t dev,
+			uint8_t fn, uint8_t reg, uint8_t val);
 
 /* Open the CPU->PCI0 I/O decode window (CPU 0xF8000000..0xF8FFFFFF
  * -> PCI I/O 0). PCI1 I/O is already open from QEMU reset default. */
