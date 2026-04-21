@@ -189,6 +189,44 @@ _reset_vector:
 	bl	tx_hex32
 	bl	tx_crlf
 
+	/*
+	 * Step 3.5 -- DRAM stuck-bit test at physical 0x00001000.
+	 *
+	 * On QEMU pegasos2 the DRAM is already live from machine init
+	 * (no real SPD probe / DDR init sequence needed -- the real-HW
+	 * sequence per docs/02-memory-controller.md section "DDR init
+	 * sequence" is a later milestone). This test just proves the
+	 * CPU can round-trip values to DRAM.
+	 *
+	 * Two complementary patterns cover every data-line stuck-at
+	 * bit. Address 0x1000 is past the exception-vector area
+	 * (0x100..0xFFF) so the test does not trample a later load.
+	 */
+	li	r7, 0x1000
+	lis	r8, 0xAAAA
+	ori	r8, r8, 0x5555
+	stw	r8, 0(r7)
+	sync
+	lwz	r9, 0(r7)
+	cmpw	r8, r9
+	bne	dram_bad
+	lis	r8, 0x5555
+	ori	r8, r8, 0xAAAA
+	stw	r8, 0(r7)
+	sync
+	lwz	r9, 0(r7)
+	cmpw	r8, r9
+	beq	dram_good
+dram_bad:
+	lis	r5, msg_dram_fail@ha
+	addi	r5, r5, msg_dram_fail@l
+	b	dram_print
+dram_good:
+	lis	r5, msg_dram_ok@ha
+	addi	r5, r5, msg_dram_ok@l
+dram_print:
+	bl	tx_string
+
 	/* Step 4 -- Halt. */
 	lis	r5, msg_halt@ha
 	addi	r5, r5, msg_halt@l
@@ -289,5 +327,11 @@ banner:
 msg_pvr:
 	.asciz "CPU PVR = 0x"
 
+msg_dram_ok:
+	.asciz "DRAM test: OK (stuck-bit patterns verified at 0x00001000)\r\n"
+
+msg_dram_fail:
+	.asciz "DRAM test: FAIL\r\n"
+
 msg_halt:
-	.asciz "Phase 1 halt (no DRAM init yet).\r\n"
+	.asciz "Phase 1 halt.\r\n"
