@@ -36,7 +36,7 @@ CFLAGS := \
     -Wall -Wextra -Werror \
     -Iupstream/x86emu/include
 
-ASFLAGS := $(CFLAGS)
+ASFLAGS := $(CFLAGS) -Wa,-mregnames
 
 LDFLAGS := \
     -nostdlib -static \
