@@ -87,6 +87,8 @@ void mv64361_enable_pci0_io_window(void)
 	mv64361_write32(MV_PCI0_IO_REMAP, 0u);
 
 	/* BASE_ADDR_ENABLE bit N set => window N disabled. Reset
-	 * default is 0x000FBFFF. Clear bit 9 to enable PCI0 I/O. */
-	mv64361_write32(MV_BASE_ADDR_ENABLE, 0x000FBDFFu);
+	 * default is 0x000FBFFF (windows 14 and 20 already enabled).
+	 * Clear bit 9 to enable PCI0 I/O and bit 15 for PCI1 mem0:
+	 *   0x000FBFFF & ~((1<<9) | (1<<15)) = 0x000F3DFF. */
+	mv64361_write32(MV_BASE_ADDR_ENABLE, 0x000F3DFFu);
 }

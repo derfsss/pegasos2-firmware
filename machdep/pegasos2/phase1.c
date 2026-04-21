@@ -19,6 +19,7 @@
 #include "vt8231.h"
 #include "pci_walker.h"
 #include "x86_glue.h"
+#include "io.h"
 #include "x86emu.h"
 
 static uint32_t read_pvr(void)
@@ -109,6 +110,95 @@ void phase1_c_main(void)
 		  (M.x86.R_AX == 0x1234 && M.x86.R_DX == 0x5678)
 		  ? "  x86emu self-test: OK\n"
 		  : "  x86emu self-test: FAIL\n");
+
+	/*
+	 * Load and execute the bochs-VGA Option ROM (Bug 1 target).
+	 *
+	 * QEMU's pegasos2 has bochs-VGA at PCI1 00:01.0 with a 64 KiB
+	 * Option ROM exposed via config-offset 0x30. We assign it a
+	 * PCI address inside the PCI1 mem0 window (CPU 0x80000000 is
+	 * a direct-mapped alias), enable mem-decode + ROM-decode,
+	 * then copy the ROM to emulator memory at 0xC0000 and run
+	 * from CS:IP = 0xC000:0x0003 per Option-ROM POST convention.
+	 */
+	uart_puts(UART1_BASE, "\nOption ROM execution (bochs-VGA):\n");
+
+	/* Enable memory decode on the VGA device (was only set for
+	 * I/O + MASTER earlier). */
+	pci_cfg_write32(1, 0, 1, 0, 0x04, 0x00000007u);
+
+	/* Park the ROM at PCI mem 0x80000000 and enable its decode
+	 * (bit 0 of ROM BAR). Address also == CPU physical 0x80000000. */
+	pci_cfg_write32(1, 0, 1, 0, 0x30, 0x80000001u);
+
+	/* Verify signature at CPU 0x80000000. */
+	uint8_t s0 = mmio_read8(0x80000000u);
+	uint8_t s1 = mmio_read8(0x80000001u);
+	uint8_t size_units = mmio_read8(0x80000002u);
+	uart_puts(UART1_BASE, "  ROM signature = 0x");
+	uart_put_hex8(UART1_BASE, s0);
+	uart_putc(UART1_BASE, ' ');
+	uart_put_hex8(UART1_BASE, s1);
+	uart_puts(UART1_BASE, "  size units = 0x");
+	uart_put_hex8(UART1_BASE, size_units);
+	uart_puts(UART1_BASE, "\n");
+
+	if (s0 != 0x55 || s1 != 0xAA) {
+		uart_puts(UART1_BASE, "  ROM signature invalid -- skipping execution\n");
+	} else {
+		uint32_t rom_bytes = (uint32_t)size_units * 512u;
+		if (rom_bytes == 0 || rom_bytes > 0x10000u)
+			rom_bytes = 0x10000u;
+		uart_puts(UART1_BASE, "  copying 0x");
+		uart_put_hex32(UART1_BASE, rom_bytes);
+		uart_puts(UART1_BASE, " bytes to emulator 0xC0000\n");
+
+		uint8_t *emu_rom = x86emu_mem(0xC0000u);
+		for (uint32_t i = 0; i < rom_bytes; i++)
+			emu_rom[i] = mmio_read8(0x80000000u + i);
+
+		/* Option-ROM POST entry per PnP spec:
+		 *   AH = ?, AL = bus number (unused by legacy ROMs)
+		 *   CS:IP = 0xC000:0x0003
+		 *   DS = 0x0040 (BDA seg), ES = 0
+		 *   Stack provided by the caller; we use SS:SP = 0x0000:0xFFF0.
+		 * Legacy VGA VBIOS does not need a PCI BIOS call trap chain;
+		 * it just POSTs and RETFs back. We watch for HLT or cycle-
+		 * limit exit.
+		 */
+		M.x86.R_CS = 0xC000;
+		M.x86.R_IP = 0x0003;
+		M.x86.R_SS = 0x0000;
+		M.x86.R_SP = 0xFFF0;
+		M.x86.R_DS = 0x0040;
+		M.x86.R_ES = 0x0000;
+		M.x86.R_AX = 0x0000;
+		M.x86.R_BX = 0x0000;
+		M.x86.R_CX = 0x0000;
+		M.x86.R_DX = 0x0000;
+
+		/* Seed top-of-stack return target: when the ROM's init
+		 * code executes RETF, pop CS:IP = 0x0050:0x0000, which
+		 * we pre-load with a single HLT (0xF4). That exits the
+		 * emulator cleanly. */
+		uint8_t *hlt_landing = x86emu_mem(0x00500u);
+		hlt_landing[0] = 0xF4;
+		uint8_t *stack_top = x86emu_mem(0x0FFF0u);
+		/* LE: IP first, then CS, as pushed by a FAR CALL. */
+		stack_top[0] = 0x00; stack_top[1] = 0x00;  /* return IP = 0 */
+		stack_top[2] = 0x50; stack_top[3] = 0x00;  /* return CS = 0x0050 */
+
+		uart_puts(UART1_BASE, "  running ROM POST...\n");
+		x86emu_run();
+
+		uart_puts(UART1_BASE, "  POST returned. AX=0x");
+		uart_put_hex16(UART1_BASE, M.x86.R_AX);
+		uart_puts(UART1_BASE, " final CS:IP=0x");
+		uart_put_hex16(UART1_BASE, M.x86.R_CS);
+		uart_putc(UART1_BASE, ':');
+		uart_put_hex16(UART1_BASE, M.x86.R_IP);
+		uart_puts(UART1_BASE, "\n");
+	}
 
 	uart_puts(UART1_BASE, "\nPhase 1 complete. Halting.\n");
 
