@@ -34,10 +34,49 @@
 	.align   2
 
 _reset_vector:
-	/* r1 = 0x00100000 (stack ceiling). */
+	/*
+	 * Copy .data from its LMA in flash into its VMA in DRAM.
+	 *   r3 = source = _data_lma (in flash)
+	 *   r4 = dest   = _data_start (in DRAM)
+	 *   r5 = end    = _data_end
+	 * Word copy; lengths are already 4-aligned by the linker.
+	 */
+	lis	r3, _data_lma@ha
+	addi	r3, r3, _data_lma@l
+	lis	r4, _data_start@ha
+	addi	r4, r4, _data_start@l
+	lis	r5, _data_end@ha
+	addi	r5, r5, _data_end@l
+copy_data:
+	cmpw	r4, r5
+	bge	copy_data_done
+	lwz	r0, 0(r3)
+	stw	r0, 0(r4)
+	addi	r3, r3, 4
+	addi	r4, r4, 4
+	b	copy_data
+copy_data_done:
+
+	/*
+	 * Zero .bss.
+	 *   r4 = dest = _bss_start
+	 *   r5 = end  = _bss_end
+	 */
+	lis	r4, _bss_start@ha
+	addi	r4, r4, _bss_start@l
+	lis	r5, _bss_end@ha
+	addi	r5, r5, _bss_end@l
+	li	r0, 0
+zero_bss:
+	cmpw	r4, r5
+	bge	zero_bss_done
+	stw	r0, 0(r4)
+	addi	r4, r4, 4
+	b	zero_bss
+zero_bss_done:
+
+	/* r1 = 0x00100000 (stack ceiling). Stack grows down toward 0. */
 	lis	r1, 0x0010
-	/* Lay down a zero back-chain word and advance sp to a 16-byte
-	 * aligned frame below the ceiling. */
 	li	r0, 0
 	stwu	r0, -16(r1)
 

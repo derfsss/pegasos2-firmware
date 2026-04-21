@@ -18,6 +18,8 @@
 #include "mv64361.h"
 #include "vt8231.h"
 #include "pci_walker.h"
+#include "x86_glue.h"
+#include "x86emu.h"
 
 static uint32_t read_pvr(void)
 {
@@ -70,6 +72,43 @@ void phase1_c_main(void)
 
 	uart_puts(UART1_BASE, "\nPCI enumeration:\n");
 	pci_walk();
+
+	/*
+	 * Synthetic x86 self-test: hand-assemble a tiny real-mode
+	 * program at CS:IP = 0x1000:0x0000 that sets AX=0x1234,
+	 * DX=0x5678, HLT. Running it proves the vendored x86emu is
+	 * alive, that our sys glue and memory buffer are correctly
+	 * set up, and that we can read registers back out.
+	 */
+	uart_puts(UART1_BASE, "\nx86 emulator self-test:\n");
+	x86_glue_init();
+
+	static const uint8_t test_prog[] = {
+		0xB8, 0x34, 0x12,    /* MOV AX, 0x1234 */
+		0xBA, 0x78, 0x56,    /* MOV DX, 0x5678 */
+		0xF4                 /* HLT            */
+	};
+	uint8_t *dst = x86emu_mem(((uint32_t)0x1000 << 4) + 0);
+	for (unsigned i = 0; i < sizeof test_prog; i++)
+		dst[i] = test_prog[i];
+
+	M.x86.R_CS = 0x1000;
+	M.x86.R_IP = 0x0000;
+	M.x86.R_AX = 0;
+	M.x86.R_DX = 0;
+
+	x86emu_run();
+
+	uart_puts(UART1_BASE, "  AX = 0x");
+	uart_put_hex16(UART1_BASE, M.x86.R_AX);
+	uart_puts(UART1_BASE, "  (expect 0x1234)\n");
+	uart_puts(UART1_BASE, "  DX = 0x");
+	uart_put_hex16(UART1_BASE, M.x86.R_DX);
+	uart_puts(UART1_BASE, "  (expect 0x5678)\n");
+	uart_puts(UART1_BASE,
+		  (M.x86.R_AX == 0x1234 && M.x86.R_DX == 0x5678)
+		  ? "  x86emu self-test: OK\n"
+		  : "  x86emu self-test: FAIL\n");
 
 	uart_puts(UART1_BASE, "\nPhase 1 complete. Halting.\n");
 
