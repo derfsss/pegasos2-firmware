@@ -29,11 +29,12 @@ MACHDEP := machdep/pegasos2
 CFLAGS := \
     -m32 -mbig-endian -mcpu=7450 \
     -msoft-float -mno-altivec \
-    -ffreestanding -fno-builtin -nostdinc \
+    -ffreestanding -fno-builtin \
     -fno-pic -fno-stack-protector \
     -fno-asynchronous-unwind-tables \
-    -Os -g \
+    -O2 -g -std=gnu11 \
     -Wall -Wextra -Werror \
+    -I$(MACHDEP) \
     -Iupstream/x86emu/include
 
 ASFLAGS := $(CFLAGS) -Wa,-mregnames
@@ -44,7 +45,12 @@ LDFLAGS := \
     -Wl,--build-id=none \
     -Wl,-Map=$(BUILD)/firmware.map
 
-OBJS := $(BUILD)/reset.o
+OBJS := \
+    $(BUILD)/reset.o \
+    $(BUILD)/phase1.o \
+    $(BUILD)/uart16550.o \
+    $(BUILD)/mv64361.o \
+    $(BUILD)/vt8231.o
 
 FIRMWARE := $(BUILD)/firmware-raw.bin
 ELF      := $(BUILD)/firmware.elf
@@ -60,6 +66,9 @@ $(BUILD):
 
 $(BUILD)/%.o: $(MACHDEP)/%.S | $(BUILD)
 	$(CC) $(ASFLAGS) -c $< -o $@
+
+$(BUILD)/%.o: $(MACHDEP)/%.c | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
 
 $(ELF): $(OBJS) $(MACHDEP)/firmware.ld | $(BUILD)
 	$(CC) $(LDFLAGS) $(OBJS) -o $@

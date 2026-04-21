@@ -1,0 +1,51 @@
+/*
+ *  Copyright (c) 2026 Pegasos2 clean-room rewrite contributors.
+ *  All rights reserved.
+ *
+ *  Redistribution and use in source and binary forms, with or without
+ *  modification, are permitted under the terms of the CodeGen source
+ *  license reproduced in LICENSES/CodeGen-smartfirmware.txt.
+ *
+ *  Polled 16550 UART driver. No interrupts, no FIFO management beyond
+ *  the reset sequence. Sufficient for Phase-1 console output.
+ */
+
+#include "uart16550.h"
+#include "io.h"
+#include "pegasos2.h"
+
+void uart_init(uint32_t base)
+{
+	/* 115200 8N1 @ 1.8432 MHz reference; divisor = 1. QEMU ignores
+	 * the divisor but real hardware needs it. */
+	mmio_write8(base + UART16550_LCR, 0x80);  /* DLAB = 1 */
+	mmio_write8(base + UART16550_DLL, 0x01);
+	mmio_write8(base + UART16550_DLM, 0x00);
+	mmio_write8(base + UART16550_LCR, 0x03);  /* 8N1, DLAB = 0 */
+	mmio_write8(base + UART16550_FCR, 0x07);  /* FIFO on, reset RX+TX */
+	mmio_write8(base + UART16550_MCR, 0x03);  /* DTR + RTS */
+}
+
+void uart_putc(uint32_t base, char c)
+{
+	while ((mmio_read8(base + UART16550_LSR) & UART16550_LSR_THRE) == 0)
+		;
+	mmio_write8(base + UART16550_THR, (uint8_t)c);
+}
+
+void uart_puts(uint32_t base, const char *s)
+{
+	while (*s) {
+		if (*s == '\n')
+			uart_putc(base, '\r');
+		uart_putc(base, *s++);
+	}
+}
+
+void uart_put_hex32(uint32_t base, uint32_t v)
+{
+	static const char hex[] = "0123456789ABCDEF";
+	int i;
+	for (i = 28; i >= 0; i -= 4)
+		uart_putc(base, hex[(v >> i) & 0xF]);
+}

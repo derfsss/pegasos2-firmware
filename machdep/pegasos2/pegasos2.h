@@ -30,20 +30,30 @@
 #define MV64361_REG_BASE   0xF1000000u
 
 /*
- * PCI0 windows as programmed by stock Pegasos II firmware.
- * PCI0 I/O maps ISA-bus I/O ports 1:1 at this base, so UART1 at
- * ISA port 0x3F8 is reachable at CPU physical 0xF80003F8.
+ * MV64361 PCI host bridge windows.
+ *
+ * NB: On QEMU pegasos2, the VT8231 southbridge (and therefore UART1)
+ * lives on PCI1, not PCI0 as docs/04-southbridge.md states. See
+ * SPEC-QUESTIONS.md Q1. We follow the emulator.
  */
 #define PCI0_IO_BASE       0xF8000000u
 #define PCI0_IO_SIZE       0x01000000u       /* 16 MiB */
+#define PCI1_IO_BASE       0xFE000000u
+#define PCI1_IO_SIZE       0x01000000u       /* 16 MiB */
 
 /* VT8231 SuperIO legacy UART ports (docs/04-southbridge.md §SuperIO). */
 #define ISA_IO_UART1       0x000003F8u
 #define ISA_IO_UART2       0x000002F8u
 
-/* UART1 as a CPU-visible physical address. */
-#define UART1_BASE         (PCI0_IO_BASE + ISA_IO_UART1)  /* 0xF80003F8 */
-#define UART2_BASE         (PCI0_IO_BASE + ISA_IO_UART2)  /* 0xF80002F8 */
+/* UART1 as a CPU-visible physical address (VT8231 on PCI1). */
+#define UART1_BASE         (PCI1_IO_BASE + ISA_IO_UART1)  /* 0xFE0003F8 */
+#define UART2_BASE         (PCI1_IO_BASE + ISA_IO_UART2)  /* 0xFE0002F8 */
+
+/* SuperIO index/data ports on the VT8231 (same PCI1 I/O window). */
+#define ISA_IO_SUPERIO_IDX 0x000003F0u
+#define ISA_IO_SUPERIO_DAT 0x000003F1u
+#define SUPERIO_IDX_ADDR   (PCI1_IO_BASE + ISA_IO_SUPERIO_IDX)
+#define SUPERIO_DAT_ADDR   (PCI1_IO_BASE + ISA_IO_SUPERIO_DAT)
 
 /* 16550 register offsets (DLAB=0 view unless noted). */
 #define UART16550_THR      0x0                /* W: transmit holding */
