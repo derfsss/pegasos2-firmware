@@ -21,8 +21,9 @@ CC      := $(PREFIX)gcc
 OBJCOPY := $(PREFIX)objcopy
 OBJDUMP := $(PREFIX)objdump
 
-BUILD   := build
-MACHDEP := machdep/pegasos2
+BUILD    := build
+MACHDEP  := machdep/pegasos2
+X86EMU   := upstream/x86emu
 
 # Bare-metal flags. No Linux runtime, no built-ins, big-endian
 # 32-bit PowerPC targeting the 7447/7450 family.
@@ -34,8 +35,9 @@ CFLAGS := \
     -fno-asynchronous-unwind-tables \
     -O2 -g -std=gnu11 \
     -Wall -Wextra -Werror \
+    -I$(MACHDEP)/x86compat \
     -I$(MACHDEP) \
-    -Iupstream/x86emu/include
+    -I$(X86EMU)/include
 
 ASFLAGS := $(CFLAGS) -Wa,-mregnames
 
@@ -51,7 +53,14 @@ OBJS := \
     $(BUILD)/uart16550.o \
     $(BUILD)/mv64361.o \
     $(BUILD)/vt8231.o \
-    $(BUILD)/pci_walker.o
+    $(BUILD)/pci_walker.o \
+    $(BUILD)/x86emu_stubs.o \
+    $(BUILD)/x86emu_ops.o \
+    $(BUILD)/x86emu_ops2.o \
+    $(BUILD)/x86emu_prim_ops.o \
+    $(BUILD)/x86emu_decode.o \
+    $(BUILD)/x86emu_sys.o \
+    $(BUILD)/x86emu_debug.o
 
 FIRMWARE := $(BUILD)/firmware-raw.bin
 ELF      := $(BUILD)/firmware.elf
@@ -70,6 +79,17 @@ $(BUILD)/%.o: $(MACHDEP)/%.S | $(BUILD)
 
 $(BUILD)/%.o: $(MACHDEP)/%.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+# Vendored x86 emulator core. The sources themselves are copied verbatim
+# from U-Boot (SciTech license) and compile under -Wno-* relaxations so
+# we don't have to patch their style.
+X86EMU_WARNS := \
+    -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function \
+    -Wno-sign-compare -Wno-missing-field-initializers \
+    -Wno-unused-but-set-variable \
+    -D__KERNEL__ -U_FORTIFY_SOURCE
+$(BUILD)/x86emu_%.o: $(X86EMU)/x86emu/%.c | $(BUILD)
+	$(CC) $(CFLAGS) $(X86EMU_WARNS) -c $< -o $@
 
 $(ELF): $(OBJS) $(MACHDEP)/firmware.ld | $(BUILD)
 	$(CC) $(LDFLAGS) $(OBJS) -o $@
