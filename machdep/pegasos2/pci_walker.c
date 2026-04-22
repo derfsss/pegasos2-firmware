@@ -80,7 +80,35 @@ static void print_device(int depth, uint8_t bus, uint8_t dev, uint8_t fn,
 	uart_puts(UART1_BASE, "\n");
 }
 
-/* ---------- BAR sizing -------------------------------------- */
+/* ---------- BAR sizing + assignment -------------------------- */
+
+/*
+ * Running high-water allocators, one pair per host. PCI1 memory
+ * uses the direct-mapped MV64361 mem0 alias starting at CPU (and
+ * PCI-side) 0x80000000 -- a BAR value here is both the PCI-bus
+ * address and the CPU physical address. PCI I/O on both hosts
+ * uses the PCI-side number space starting at 0x1000 so that the
+ * legacy-ISA ports (UART1 at 0x3F8, SuperIO index at 0x3F0, etc.)
+ * stay free for the VT8231.
+ *
+ * PCI0 on QEMU has only the host bridge itself populated, so the
+ * mem allocator there is never exercised today; it is kept
+ * symmetric for when real HW (or a future QEMU) places devices
+ * on PCI0.
+ *
+ * Bridge MEM/IO windows are NOT programmed here -- that requires
+ * a two-pass algorithm (subtree totals before the bridge's own
+ * base/limit can be written). Devices behind a bridge still get
+ * BAR addresses; reaching them via MMIO will need that follow-up.
+ */
+static uint32_t s_alloc_mem_next[2] = { 0x80000000u, 0x80000000u };
+static uint32_t s_alloc_io_next [2] = { 0x00001000u, 0x00001000u };
+
+static uint32_t align_up(uint32_t v, uint32_t a)
+{
+	/* a is a power of two (BAR sizes are always 2^N by PCI spec). */
+	return (v + (a - 1u)) & ~(a - 1u);
+}
 
 /*
  * Non-destructive BAR probe per PCI 2.3 §6.2.5.1:
@@ -133,21 +161,37 @@ static void print_mem_type(uint32_t flags, int is_64)
 	uart_puts(UART1_BASE, pref ? " pref" : "     ");
 }
 
-static void probe_and_print_bars(int host, uint8_t bus, uint8_t dev, uint8_t fn,
-				 uint8_t header_type, int depth)
+/*
+ * Probe every BAR on a device, assign an address, and print the
+ * per-BAR line. Returns a bitmask of PCI_CMD_MEM/PCI_CMD_IO bits
+ * indicating which command-register decoders the caller should
+ * enable for this device.
+ *
+ * BAR assignment policy:
+ *   - Memory BAR: base = align_up(host's mem allocator, size)
+ *   - I/O BAR   : base = align_up(host's io  allocator, size)
+ *   - ROM BAR   : base = align_up(host's mem allocator, size),
+ *                  enable bit set so the ROM is visible.
+ *   - 64-bit BAR: low dword gets the base, high dword gets 0. We
+ *                  stay within the 4 GiB PCI memory window.
+ */
+static unsigned probe_assign_and_print_bars(int host, uint8_t bus, uint8_t dev,
+					    uint8_t fn, uint8_t header_type,
+					    int depth)
 {
 	const uint8_t ht_kind = header_type & PCI_HEADER_TYPE_MASK;
 	const int num_bars =
 		(ht_kind == PCI_HTYPE_BRIDGE) ? PCI_BAR_COUNT_TYPE1
 					      : PCI_BAR_COUNT_TYPE0;
+	unsigned cmd_bits = 0;
 
 	for (int i = 0; i < num_bars; i++) {
 		const uint8_t  offset    = PCI_BAR_0 + (uint8_t)(i * 4);
 		const uint32_t first_val = pci_cfg_read32(host, bus, dev, fn,
 							  offset);
-		const uint32_t addr_mask = (first_val & PCI_BAR_SPACE_IO)
-						? PCI_BAR_IO_ADDR_MASK
-						: PCI_BAR_MEM_ADDR_MASK;
+		const int      is_io     = (first_val & PCI_BAR_SPACE_IO) != 0;
+		const uint32_t addr_mask = is_io ? PCI_BAR_IO_ADDR_MASK
+						 : PCI_BAR_MEM_ADDR_MASK;
 
 		uint32_t flags;
 		int      is_64;
@@ -155,16 +199,31 @@ static void probe_and_print_bars(int host, uint8_t bus, uint8_t dev, uint8_t fn,
 						    addr_mask, &flags, &is_64);
 
 		if (size != 0) {
+			uint32_t *hw = is_io ? &s_alloc_io_next[host]
+					     : &s_alloc_mem_next[host];
+			const uint32_t base = align_up(*hw, size);
+			*hw = base + size;
+
+			const uint32_t bar_val = (flags & ~addr_mask) | base;
+			pci_cfg_write32(host, bus, dev, fn, offset, bar_val);
+			if (is_64)
+				pci_cfg_write32(host, bus, dev, fn, offset + 4,
+						0u);
+
+			cmd_bits |= is_io ? PCI_CMD_IO : PCI_CMD_MEM;
+
 			put_indent(depth);
 			uart_puts(UART1_BASE, "      BAR");
 			uart_putc(UART1_BASE, '0' + i);
 			uart_puts(UART1_BASE, ": ");
-			if (flags & PCI_BAR_SPACE_IO)
+			if (is_io)
 				uart_puts(UART1_BASE, "io        ");
 			else
 				print_mem_type(flags, is_64);
 			uart_puts(UART1_BASE, " size=0x");
 			uart_put_hex32(UART1_BASE, size);
+			uart_puts(UART1_BASE, " -> 0x");
+			uart_put_hex32(UART1_BASE, base);
 			uart_puts(UART1_BASE, "\n");
 		}
 
@@ -183,11 +242,24 @@ static void probe_and_print_bars(int host, uint8_t bus, uint8_t dev, uint8_t fn,
 						PCI_ROM_BAR_ADDR_MASK,
 						&rom_flags, &rom_is_64);
 	if (rom_size != 0) {
+		uint32_t *hw = &s_alloc_mem_next[host];
+		const uint32_t base = align_up(*hw, rom_size);
+		*hw = base + rom_size;
+
+		pci_cfg_write32(host, bus, dev, fn, rom_offset,
+				base | PCI_ROM_BAR_ENABLE);
+
+		cmd_bits |= PCI_CMD_MEM;
+
 		put_indent(depth);
 		uart_puts(UART1_BASE, "      ROM : rom        size=0x");
 		uart_put_hex32(UART1_BASE, rom_size);
-		uart_puts(UART1_BASE, "\n");
+		uart_puts(UART1_BASE, " -> 0x");
+		uart_put_hex32(UART1_BASE, base);
+		uart_puts(UART1_BASE, " (enabled)\n");
 	}
+
+	return cmd_bits;
 }
 
 /* ---------- enumeration ------------------------------------- */
@@ -220,7 +292,28 @@ static void pci_scan_function(struct walk_ctx *ctx, uint8_t bus,
 	uint8_t  ht_kind     = header_type & PCI_HEADER_TYPE_MASK;
 
 	print_device(depth, bus, dev, fn, vendor, device, class, header_type);
-	probe_and_print_bars(ctx->host, bus, dev, fn, header_type, depth);
+
+	unsigned cmd_bits = probe_assign_and_print_bars(ctx->host, bus, dev, fn,
+							header_type, depth);
+	if (cmd_bits != 0) {
+		/*
+		 * Enable the appropriate decoder(s) plus bus-master.
+		 * PCI_CMD_MASTER is set unconditionally so devices can
+		 * initiate DMA; this is the standard firmware policy.
+		 * pci_cfg_write16 does a read-modify-write so PCI_STATUS
+		 * (in the high half of the same dword) stays untouched.
+		 */
+		uint16_t cmd = pci_cfg_read16(ctx->host, bus, dev, fn,
+					      PCI_COMMAND);
+		cmd |= (uint16_t)cmd_bits | PCI_CMD_MASTER;
+		pci_cfg_write16(ctx->host, bus, dev, fn, PCI_COMMAND, cmd);
+
+		put_indent(depth);
+		uart_puts(UART1_BASE, "      cmd: ");
+		if (cmd_bits & PCI_CMD_MEM) uart_puts(UART1_BASE, "MEM ");
+		if (cmd_bits & PCI_CMD_IO ) uart_puts(UART1_BASE, "IO ");
+		uart_puts(UART1_BASE, "MASTER\n");
+	}
 
 	if (ht_kind == PCI_HTYPE_BRIDGE && class == PCI_CLASS_BRIDGE_PCI) {
 		uint8_t secondary = ctx->next_bus++;

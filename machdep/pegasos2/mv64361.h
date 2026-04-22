@@ -47,6 +47,8 @@ void     pci_cfg_write32(int host, uint8_t bus, uint8_t dev,
 
 uint16_t pci_cfg_read16(int host, uint8_t bus, uint8_t dev,
 			uint8_t fn, uint8_t reg);
+void     pci_cfg_write16(int host, uint8_t bus, uint8_t dev,
+			 uint8_t fn, uint8_t reg, uint16_t val);
 uint8_t  pci_cfg_read8 (int host, uint8_t bus, uint8_t dev,
 			uint8_t fn, uint8_t reg);
 void     pci_cfg_write8(int host, uint8_t bus, uint8_t dev,

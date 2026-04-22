@@ -80,6 +80,23 @@ void pci_cfg_write8(int host, uint8_t bus, uint8_t dev,
 	pci_cfg_write32(host, bus, dev, fn, reg, v);
 }
 
+void pci_cfg_write16(int host, uint8_t bus, uint8_t dev,
+		     uint8_t fn, uint8_t reg, uint16_t val)
+{
+	/*
+	 * Read-modify-write the 32-bit word containing this 16-bit slot.
+	 * Critical for command-register writes: PCI_STATUS sits in bits
+	 * 16..31 of the same dword and its bits are RW1C; a full-word
+	 * write with 1 bits in the status half would clear latched
+	 * errors as a side effect. RMW with an unchanged status half
+	 * is the safe pattern.
+	 */
+	uint32_t v = pci_cfg_read32(host, bus, dev, fn, reg);
+	unsigned shift = (unsigned)(reg & 2) * 8;
+	v = (v & ~(0xFFFFu << shift)) | ((uint32_t)val << shift);
+	pci_cfg_write32(host, bus, dev, fn, reg, v);
+}
+
 void mv64361_enable_pci0_io_window(void)
 {
 	/* Remap PCI-side base of the CPU 0xF8000000 window to PCI I/O 0

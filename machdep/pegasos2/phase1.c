@@ -6,10 +6,13 @@
  *  modification, are permitted under the terms of the CodeGen source
  *  license reproduced in LICENSES/CodeGen-smartfirmware.txt.
  *
- *  Phase-1 C entry point. Called by reset.S after the stack has been
- *  set up in DRAM. Runs in real mode (MSR[IR]=MSR[DR]=0), no caches,
- *  no exception vectors installed, no FP. Brings up UART1 and emits
- *  a banner plus a DRAM round-trip check, then halts.
+ *  Phase-1 C entry point. Called by reset.S after it has:
+ *    - copied .data/.bss and initialised the stack in DRAM
+ *    - copied the exception-vector table to 0x00000000..0x00002000
+ *    - cleared MSR[IP] so faults route to 0x00000100..0x00001300
+ *  Still runs in real mode (MSR[IR]=MSR[DR]=0) with no caches, no
+ *  FP, no external interrupts. Brings up UART1, emits a banner and
+ *  diagnostic output, runs the Phase-1 self-tests, and halts.
  */
 
 #include <stdint.h>
@@ -17,6 +20,7 @@
 #include "uart16550.h"
 #include "mv64361.h"
 #include "vt8231.h"
+#include "pci.h"
 #include "pci_walker.h"
 #include "x86_glue.h"
 #include "io.h"
@@ -123,27 +127,31 @@ void phase1_c_main(void)
 	/*
 	 * Load and execute the bochs-VGA Option ROM (Bug 1 target).
 	 *
-	 * QEMU's pegasos2 has bochs-VGA at PCI1 00:01.0 with a 64 KiB
-	 * Option ROM exposed via config-offset 0x30. We assign it a
-	 * PCI address inside the PCI1 mem0 window (CPU 0x80000000 is
-	 * a direct-mapped alias), enable mem-decode + ROM-decode,
-	 * then copy the ROM to emulator memory at 0xC0000 and run
-	 * from CS:IP = 0xC000:0x0003 per Option-ROM POST convention.
+	 * The PCI walker has already assigned this device's BARs and
+	 * the expansion-ROM BAR, and enabled MEM+IO+MASTER in the
+	 * command register. We just read the ROM BAR back from config
+	 * space to find where it landed and copy from there. PCI1
+	 * mem0 is direct-mapped on QEMU so the PCI-side base is also
+	 * the CPU physical address.
 	 */
 	uart_puts(UART1_BASE, "\nOption ROM execution (bochs-VGA):\n");
 
-	/* Enable memory decode on the VGA device (was only set for
-	 * I/O + MASTER earlier). */
-	pci_cfg_write32(1, 0, 1, 0, 0x04, 0x00000007u);
+	uint32_t rom_bar = pci_cfg_read32(1, 0, 1, 0, 0x30);
+	uint32_t rom_addr = rom_bar & 0xFFFFF800u;
+	if (!(rom_bar & PCI_ROM_BAR_ENABLE)) {
+		uart_puts(UART1_BASE, "  ROM BAR not enabled -- walker skipped it\n");
+	}
 
-	/* Park the ROM at PCI mem 0x80000000 and enable its decode
-	 * (bit 0 of ROM BAR). Address also == CPU physical 0x80000000. */
-	pci_cfg_write32(1, 0, 1, 0, 0x30, 0x80000001u);
+	uart_puts(UART1_BASE, "  ROM BAR    = 0x");
+	uart_put_hex32(UART1_BASE, rom_bar);
+	uart_puts(UART1_BASE, " (addr=0x");
+	uart_put_hex32(UART1_BASE, rom_addr);
+	uart_puts(UART1_BASE, ")\n");
 
-	/* Verify signature at CPU 0x80000000. */
-	uint8_t s0 = mmio_read8(0x80000000u);
-	uint8_t s1 = mmio_read8(0x80000001u);
-	uint8_t size_units = mmio_read8(0x80000002u);
+	/* Verify signature at the ROM BAR's CPU-visible address. */
+	uint8_t s0 = mmio_read8(rom_addr);
+	uint8_t s1 = mmio_read8(rom_addr + 1);
+	uint8_t size_units = mmio_read8(rom_addr + 2);
 	uart_puts(UART1_BASE, "  ROM signature = 0x");
 	uart_put_hex8(UART1_BASE, s0);
 	uart_putc(UART1_BASE, ' ');
@@ -164,7 +172,7 @@ void phase1_c_main(void)
 
 		uint8_t *emu_rom = x86emu_mem(0xC0000u);
 		for (uint32_t i = 0; i < rom_bytes; i++)
-			emu_rom[i] = mmio_read8(0x80000000u + i);
+			emu_rom[i] = mmio_read8(rom_addr + i);
 
 		/* Option-ROM POST entry per PnP spec:
 		 *   AH = ?, AL = bus number (unused by legacy ROMs)

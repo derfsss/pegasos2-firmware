@@ -17,21 +17,24 @@ client interface) are NOT started.
 
 A successful boot of `build/firmware-raw.bin` on
 `qemu-system-ppc -M pegasos2 -m 512 -bios ... -serial ... -display none`
-produces **1,439 bytes** of serial output containing, in order:
+produces **1,730 bytes** of serial output containing, in order:
 
 1. Banner with PVR (0x80020102 = MPC7447A) and DRAM round-trip OK.
 2. Console address and stack pointer.
 3. Exception-vector install confirmation (`MSR[IP]=0`).
 4. Full PCI enumeration across both MV64361 host bridges,
    including recursion through PCI-to-PCI bridges (`-device
-   pci-bridge,...` topologies render the correct tree) and
-   per-BAR sizes printed under each device (`mem32 pref`,
-   `mem32`, `mem64`, `io`, `rom`).
+   pci-bridge,...` topologies render the correct tree). Each
+   device prints its BAR sizes AND assigned addresses (e.g.
+   `BAR0: mem32 pref size=0x01000000 -> 0x80000000`) plus the
+   command-register bits it enables (`cmd: MEM IO MASTER`).
 5. Synthetic x86-emulator self-test (MOV AX / 0F FE PADDB / MOV
    AX / HLT) passes.
-6. bochs-VGA Option ROM loaded from the device's PCI ROM BAR and
-   POSTed to completion inside our PPC-hosted x86 real-mode
-   emulator. Returns to our HLT trampoline at CS:IP=0x0050:0001.
+6. bochs-VGA Option ROM POSTed to completion -- its ROM BAR is
+   now assigned by the walker (typically 0x81010000 on QEMU) and
+   phase1 reads that address back from config space rather than
+   hard-coding one. Returns to our HLT trampoline at
+   CS:IP=0x0050:0001.
 7. Clean halt.
 
 No `INTERNAL ERROR`, `UNHANDLED`, `Failed to emulate`, `STUCK
@@ -48,7 +51,8 @@ enabled in the default build.
 ## Commit history (as of this writing)
 
 ```
-(new)    PCI walker: BAR sizing (non-destructive probe)
+(new)    PCI walker: BAR address assignment + cmd-register enable
+48ce9a7  PCI walker: BAR sizing (non-destructive probe)
 cea94f8  Exception vectors + panic handler (spec 01 §Exception vectors)
 d2f58fc  x86emu: 0F FE (PADDB) handler (spec 09 bullet)
 c5b0807  Option-ROM execution: bochs-VGA VBIOS runs clean (Bug 1 fix)
@@ -69,7 +73,7 @@ cced4b5  Phase 1 banner on UART1
 | 1 | Build system | Done. Makefile + linker script + reset trampoline. |
 | 2 | CPU init + banner on UART1 | Done on QEMU. Exception vectors installed at 0x100..0x1300 with MSR[IP]=0. Real-HW init (cache invalidate, BAT setup, clock-gen probe, MSR[ME]=1, decrementer arm) deferred. |
 | 3 | DRAM init | Done on QEMU (QEMU pre-wires DRAM). Real-HW DDR init sequence (docs/02 §"DDR init sequence" steps 1–12, SPD probe, mode-register programming) is **not implemented**. |
-| 4 | PCI enumeration (Bug 2 fix) | Done. Spec 03 Tests #1 + #2 pass. BAR **sizing** done (non-destructive probe, prints resource map under each device). BAR **assignment** + bridge MEM/IO-window programming still pending. |
+| 4 | PCI enumeration (Bug 2 fix) | Done. Spec 03 Tests #1 + #2 pass. BAR **sizing and assignment** done: walker assigns 32-bit mem from 0x80000000 upward and PCI-side I/O from 0x1000 upward, enables PCI_COMMAND bits per device. Bridge MEM/IO-**window** programming (parent's forwarded range for bus-forwarded MMIO/IO) still pending. |
 | 5 | VT8231 full init | Partial -- UART1 chain only. IDE, USB, AC'97, PM, SMBus, PIC are not initialised. |
 | 6 | OF Forth runtime | Not started. |
 | 7 | NVRAM (M48T59) | Not started. |
@@ -283,17 +287,18 @@ Pick based on appetite. Each is roughly a single focused commit.
 
 ### Near-term, unblocks later work
 
-**PCI BAR + bridge-window assignment.** Sizing is done (walker
-prints per-BAR `mem32 / mem32 pref / mem64 / io / rom` lines
-with size). Assignment is next: a two-pass allocator. Pass 1
-gathers per-device requests; pass 2 walks the tree bottom-up
-and assigns addresses from running high-water marks in the
-PCI1 mem0 window (0x80000000..0xBFFFFFFF direct-mapped),
-mem-prefetch, and PCI IO windows (0xFE000000 CPU / 0x00000000
-PCI-side). For each bridge, MEM/IO base+limit must enclose the
-subtree's assignments, aligned to 1 MiB / 4 KiB per spec 03
-§"BAR allocation". Retire the hand-rolled VGA ROM-BAR write in
-`phase1.c` once the allocator can satisfy it.
+**PCI-to-PCI bridge MEM/IO-window programming.** BAR assignment
+is done single-pass (each device picks up an address from the
+host's running allocator, and command-register bits get enabled).
+What's missing for devices *behind* a bridge is the bridge's own
+MEM_BASE/LIMIT (0x20/0x22) and IO_BASE/LIMIT (0x1C/0x1D) pair:
+until those enclose the subtree's assignments, CPU-side MMIO at
+the assigned address won't be forwarded past the bridge. The
+walker already knows every subtree's allocator range (it's just
+the delta in `s_alloc_{mem,io}_next[host]` around the recursion
+call); a second pass that writes base/limit on unwind is the
+natural next step. Real HW exposes the e1000-behind-bridge at
+that point; today it enumerates but remains unreachable via MMIO.
 
 **Enable MSR[ME] and wire external-interrupt / decrementer
 handlers.** Vectors are installed (see gotcha 11 below), but all
