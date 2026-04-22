@@ -22,6 +22,7 @@
 #include "vt8231.h"
 #include "pci.h"
 #include "pci_walker.h"
+#include "timer.h"
 #include "x86_glue.h"
 #include "io.h"
 #include "x86emu.h"
@@ -216,6 +217,34 @@ void phase1_c_main(void)
 		uart_put_hex16(UART1_BASE, M.x86.R_IP);
 		uart_puts(UART1_BASE, "\n");
 	}
+
+	/*
+	 * Decrementer self-test. Arm SPR 22 with DEC_TICKS_PER_MS,
+	 * enable MSR[EE] briefly, busy-spin long enough for several
+	 * fires, disable MSR[EE] again, and report the accumulated
+	 * tick count. A non-zero delta proves the 0x900 vector runs
+	 * and rfi's back cleanly. MSR[EE] is disabled again before
+	 * the final halt so any latched ExtInt does not land in the
+	 * panic stub at 0x500.
+	 */
+	uart_puts(UART1_BASE, "\nDecrementer test:\n");
+	uart_puts(UART1_BASE, "  before spin: 0x");
+	uart_put_hex32(UART1_BASE, get_msecs());
+	uart_puts(UART1_BASE, "\n");
+
+	timer_arm(DEC_TICKS_PER_MS);
+	enable_ei();
+	for (volatile uint32_t i = 0; i < 1000000u; i++)
+		;
+	disable_ei();
+
+	uint32_t ticks = get_msecs();
+	uart_puts(UART1_BASE, "  after  spin: 0x");
+	uart_put_hex32(UART1_BASE, ticks);
+	uart_puts(UART1_BASE, "\n");
+	uart_puts(UART1_BASE,
+		  ticks > 0 ? "  decrementer handler: OK\n"
+			    : "  decrementer handler: FAIL (no ticks)\n");
 
 #ifdef EXCEPTION_TEST
 	/*

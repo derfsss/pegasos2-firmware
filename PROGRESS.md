@@ -17,7 +17,7 @@ client interface) are NOT started.
 
 A successful boot of `build/firmware-raw.bin` on
 `qemu-system-ppc -M pegasos2 -m 512 -bios ... -serial ... -display none`
-produces **1,730 bytes** of serial output containing, in order:
+produces **1,832 bytes** of serial output containing, in order:
 
 1. Banner with PVR (0x80020102 = MPC7447A) and DRAM round-trip OK.
 2. Console address and stack pointer.
@@ -35,7 +35,11 @@ produces **1,730 bytes** of serial output containing, in order:
    phase1 reads that address back from config space rather than
    hard-coding one. Returns to our HLT trampoline at
    CS:IP=0x0050:0001.
-7. Clean halt.
+7. Decrementer self-test: MSR[EE] enabled briefly, busy-spin,
+   MSR[EE] disabled, accumulated tick count reported (non-zero
+   delta proves 0x900 handler runs and rfi's back). MSR[ME] and
+   MSR[RI] are also set at reset time.
+8. Clean halt.
 
 No `INTERNAL ERROR`, `UNHANDLED`, `Failed to emulate`, `STUCK
 CS:IP`, or `!! PANIC` strings appear anywhere in the default
@@ -51,7 +55,8 @@ enabled in the default build.
 ## Commit history (as of this writing)
 
 ```
-(new)    PCI walker: bridge MEM/IO window programming
+(new)    Decrementer handler + MSR[ME]/[RI]; ms-tick API
+cda478f  PCI walker: bridge MEM/IO window programming
 e59c2c7  PCI walker: BAR address assignment + cmd-register enable
 48ce9a7  PCI walker: BAR sizing (non-destructive probe)
 cea94f8  Exception vectors + panic handler (spec 01 §Exception vectors)
@@ -72,7 +77,7 @@ cced4b5  Phase 1 banner on UART1
 | Step | Topic | Status |
 |---|---|---|
 | 1 | Build system | Done. Makefile + linker script + reset trampoline. |
-| 2 | CPU init + banner on UART1 | Done on QEMU. Exception vectors installed at 0x100..0x1300 with MSR[IP]=0. Real-HW init (cache invalidate, BAT setup, clock-gen probe, MSR[ME]=1, decrementer arm) deferred. |
+| 2 | CPU init + banner on UART1 | Done on QEMU. Exception vectors installed at 0x100..0x1300 with MSR[IP]=0, MSR[ME]=1, MSR[RI]=1. Decrementer (0x900) has a real handler + millisecond tick counter; ExtInt (0x500) and Syscall (0xC00) still panic-stubbed. Real-HW init (cache invalidate, BAT setup, clock-gen probe, TB calibration) deferred. |
 | 3 | DRAM init | Done on QEMU (QEMU pre-wires DRAM). Real-HW DDR init sequence (docs/02 §"DDR init sequence" steps 1–12, SPD probe, mode-register programming) is **not implemented**. |
 | 4 | PCI enumeration (Bug 2 fix) | Done. Spec 03 Tests #1 + #2 pass. Full PCI resource pipeline: sizing, BAR assignment, cmd-register enable, and bridge MEM/IO-window programming (BASE/LIMIT at 0x20/0x22 and 0x1C/0x1D, with allocator padding to 1 MiB / 4 KiB granularity around recursion so devices behind a bridge are reachable via CPU MMIO). Prefetchable window still shares the non-prefetch allocator; 64-bit-above-4 GiB not supported. |
 | 5 | VT8231 full init | Partial -- UART1 chain only. IDE, USB, AC'97, PM, SMBus, PIC are not initialised. |
@@ -91,8 +96,9 @@ machdep/pegasos2/
 ├── reset.S              reset-vector trampoline (data/bss/vectors copy, MSR[IP]=0, stack init, call C)
 ├── firmware.ld          linker script (flash @0xFFF00000, dram @0x00100000, vectors @0x00000000)
 ├── phase1.c             Phase-1 C entry: bring up hardware, run tests
-├── exceptions.S         12 vector stubs at 0x100..0x1300 + common_trap save-all path
+├── exceptions.S         vector stubs at 0x100..0x1300 + common_trap + real 0x900 decrementer handler + _ms_tick_count
 ├── panic.c              panic_dump(): UART1 register dump for unrecoverable exceptions
+├── timer.c/h            get_msecs(), timer_arm(), enable_ei()/disable_ei() MSR[EE] toggles
 ├── pegasos2.h           memory-map constants (flash, MV64361, PCI windows, UART)
 ├── io.h                 inline-asm MMIO accessors (BE + LE variants, byte)
 ├── uart16550.c/h        polled 16550 driver
@@ -249,7 +255,22 @@ maps it at `0xFFF00000..0xFFF7FFFF`. We build for QEMU's layout.
 A real-HW-ready build would need to either relocate to 0xFFF80000
 or ship two copies for aliasing -- this is a known open item.
 
-### 11. Exception-vector install timing
+### 11. `DEC_TICKS_PER_MS` is duplicated in asm and C
+
+The decrementer re-arm value (25000) is hardcoded both in
+`exceptions.S` (the 0x900 handler's `li r4, 25000`) and in
+`timer.h` (the `DEC_TICKS_PER_MS` macro). Nothing enforces
+these stay in sync; if one is changed without the other, the
+tick rate and the macro disagree, which only matters when the
+macro is used for a duration calculation. The asm side can't
+easily include timer.h (it pulls in C declarations GAS
+doesn't understand), so either leave the duplication with a
+cross-reference comment (current choice) or promote the
+constant to a `.set` directive that both sides share via a
+preprocessor pass. If the value is ever recalibrated on real
+HW per spec 01 §"Clock detection", update both sites.
+
+### 12. Exception-vector install timing
 
 `reset.S` copies the `.vectors` section from its flash LMA to
 VMA 0x00000000, then clears MSR[IP] *before* calling
@@ -288,14 +309,15 @@ Pick based on appetite. Each is roughly a single focused commit.
 
 ### Near-term, unblocks later work
 
-**Enable MSR[ME]=1 + real handlers for decrementer / ExtInt /
-syscall.** Vectors are installed and every one currently lands
-in panic_dump. Spec 01 calls for MSR[ME]=1 so machine checks are
-recoverable; a 1 kHz decrementer tick to drive `get-msecs`; an
-external-interrupt dispatch chain MV64361 IC -> VT8231 PIC ->
-registered handler; and a syscall (0xC00) trampoline for the
-IEEE-1275 client interface (spec 06). Each replaces one stub in
-`exceptions.S` with a real handler that returns via `rfi`.
+**External-interrupt (0x500) dispatch + Syscall (0xC00)
+trampoline.** MSR[ME]/[RI] are set, Decrementer (0x900) runs a
+real handler that feeds `get_msecs()`, but 0x500 and 0xC00 still
+panic. External-interrupt needs MV64361 main/GPP IC init -> VT8231
+PIC init -> registered-handler table + dispatch logic; tested by
+arming one device's IRQ and observing the handler fire. Syscall
+needs the IEEE-1275 client-interface entry point (spec 06) to
+dispatch to -- it's roughly 20 lines of asm but the body is the
+whole client interface, so land both together.
 
 **Prefetchable memory window + 64-bit BAR support.** The walker
 currently routes every memory BAR (prefetchable or not) through

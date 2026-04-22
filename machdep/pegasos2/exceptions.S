@@ -66,7 +66,33 @@
 	VECTOR_STUB 0x600
 	VECTOR_STUB 0x700
 	VECTOR_STUB 0x800
-	VECTOR_STUB 0x900
+
+	/*
+	 * Decrementer (0x900): real handler, not a panic stub.
+	 *
+	 * On entry: SPR 22 (DEC) has just wrapped to negative.
+	 *   SRR0/SRR1 = interrupted PC / MSR. rfi will restore both.
+	 *   MSR at handler entry has IR=DR=EE=0 (HW forces those off).
+	 *   SPRG0/SPRG1 are free scratch; all other regs must survive.
+	 *
+	 * Body:
+	 *   ++_ms_tick_count
+	 *   DEC <- DEC_TICKS_PER_MS  (25000; see timer.h for rationale)
+	 *   rfi
+	 */
+	. = 0x900
+	mtspr   272, r3              /* SPRG0 = r3 */
+	mtspr   273, r4              /* SPRG1 = r4 */
+	lis     r3, _ms_tick_count@ha
+	lwz     r4, _ms_tick_count@l(r3)
+	addi    r4, r4, 1
+	stw     r4, _ms_tick_count@l(r3)
+	li      r4, 25000            /* DEC_TICKS_PER_MS */
+	mtspr   22, r4               /* SPR 22 = DEC; re-arm */
+	mfspr   r4, 273
+	mfspr   r3, 272
+	rfi
+
 	VECTOR_STUB 0xC00
 	VECTOR_STUB 0xD00
 	VECTOR_STUB 0x1300
@@ -200,6 +226,17 @@ _panic_stack:
 	.skip    4096
 	.globl   _panic_stack_top
 _panic_stack_top:
+
+	/*
+	 * Millisecond tick counter, incremented by the decrementer
+	 * handler at 0x900. 32-bit so aligned reads are atomic on
+	 * PPC32; wraps every ~49 days which is irrelevant for a
+	 * boot-only firmware.
+	 */
+	.align   4
+	.globl   _ms_tick_count
+_ms_tick_count:
+	.skip    4
 
 	/* Silence a linker GNU-stack note for this asm file. */
 	.section .note.GNU-stack, "", @progbits

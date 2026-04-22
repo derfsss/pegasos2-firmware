@@ -107,16 +107,21 @@ copy_vec_done:
 	isync
 
 	/*
-	 * Clear MSR[IP]. Power-ISA bit 25 (MSB=0), mask 0x00000040 in
-	 * value form. With IP=0, hardware fetches exception handlers
-	 * at 0x00000100..0x00001300 (our installed table) instead of
-	 * 0xFFF00100..0xFFF01300 in the flash image.
+	 * MSR fixups for Phase 1, per docs/01-cpu-init.md §MSR setup:
+	 *    clear IP  (bit 25 MSB, mask 0x00000040) -- route exceptions
+	 *              to the table we just copied at 0x00000100..
+	 *    set   ME  (bit 19 MSB, mask 0x00001000) -- machine checks
+	 *              become recoverable instead of CHECKSTOP
+	 *    set   RI  (bit 30 MSB, mask 0x00000002) -- "recoverable
+	 *              interrupt", signals that SRR0/SRR1 do not hold
+	 *              critical in-flight state (steady-state value)
 	 * mtmsr is context-synchronising only when paired with
 	 * sync/isync around it per MPC7447 user manual.
 	 */
 	mfmsr	r3
-	li	r4, 0x40
-	andc	r3, r3, r4
+	ori	r3, r3, 0x1002              /* set ME | RI */
+	li	r4, 0x40                    /* IP mask */
+	andc	r3, r3, r4                  /* clear IP */
 	sync
 	mtmsr	r3
 	isync
