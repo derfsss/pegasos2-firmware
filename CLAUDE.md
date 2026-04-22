@@ -24,8 +24,9 @@ the specifications in `docs/`.
    guess what the original did.
 
 ## First action
-Read `docs/START-HERE.md`. It has the build order and acceptance
-criteria. Follow it.
+Read `PROGRESS.md` for the current state of the implementation,
+then `docs/START-HERE.md` for the build order and acceptance
+criteria.
 
 ## Build target
 A `firmware-raw.bin` ≤ 512 KiB that boots QEMU `-M pegasos2` and a
@@ -52,8 +53,17 @@ as a spec-clarity issue if asked, but do NOT edit `docs/`.
 
 ## Before writing any code
 1. Re-read this CLAUDE.md.
-2. Read `README.md`, then `CLEAN-ROOM-BOUNDARY.md`, then
-   `docs/README.md`, then `docs/START-HERE.md`.
-3. Propose a build-system choice (fork `openbios/smartfirmware` vs
-   from-scratch C + PPC asm) and wait for maintainer approval
-   before laying down code.
+2. Read `PROGRESS.md` for what has been done and what is next.
+3. Read `README.md`, `CLEAN-ROOM-BOUNDARY.md`, `docs/README.md`,
+   and `docs/START-HERE.md`.
+4. Scan `SPEC-QUESTIONS.md` for open spec-vs-QEMU divergences --
+   the last impl agent recorded several there.
+5. For a fresh milestone, propose scope + expected output on
+   serial (or the artefact), wait for maintainer approval, then
+   implement. Keep commits discrete and well-messaged for the
+   clean-room audit trail.
+
+(The first impl agent got maintainer approval on building atop
+`openbios/smartfirmware` -- that decision stands. Continue from
+`PROGRESS.md`'s next-milestones list unless the maintainer
+redirects.)
