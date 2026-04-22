@@ -3,7 +3,7 @@
 This file is the handoff document for the next impl-agent session.
 Read it after `CLAUDE.md` and `docs/START-HERE.md`.
 
-## One-line status (2026-04-22)
+## One-line status (2026-04-23)
 
 OF Forth runtime bring-up is in progress as a multi-commit
 series. Commits 1..5 of N are done: machdep.h scaffold, machdep.c
@@ -74,7 +74,7 @@ enabled in the default build.
 ## Commit history (as of this writing)
 
 ```
-(new)    OF bring-up 5/N: interactive Forth REPL on serial via /failsafe
+c646154  OF bring-up 5/N: interactive Forth REPL on serial via /failsafe
 f23d7ec  OF bring-up 4/N: OF runs from firmware.bin; reaches `ok` via failsafe
 1d9c910  OF bring-up 3/N: full SF subset + platform glue; of-test closes
 e208c6c  OF bring-up 2/N: machdep.c stubs + of-test partial-link target
