@@ -246,7 +246,7 @@ void phase1_c_main(void)
 	 */
 	uart_puts(UART1_BASE, "\nDecrementer test:\n");
 	uart_puts(UART1_BASE, "  before spin: 0x");
-	uart_put_hex32(UART1_BASE, get_msecs());
+	uart_put_hex32(UART1_BASE, pegasos2_get_msecs_ticks());
 	uart_puts(UART1_BASE, "\n");
 
 	timer_arm(timer_ms_reload());
@@ -255,7 +255,7 @@ void phase1_c_main(void)
 		;
 	disable_ei();
 
-	uint32_t ticks = get_msecs();
+	uint32_t ticks = pegasos2_get_msecs_ticks();
 	uart_puts(UART1_BASE, "  after  spin: 0x");
 	uart_put_hex32(UART1_BASE, ticks);
 	uart_puts(UART1_BASE, "\n");
@@ -301,8 +301,28 @@ void phase1_c_main(void)
 	uart_puts(UART1_BASE, "(!!! test returned from trap -- should not happen)\n");
 #endif
 
-	uart_puts(UART1_BASE, "\nPhase 1 complete. Halting.\n");
+	/*
+	 * Hand off to the SmartFirmware OF runtime.  Its main() calls
+	 * machine_initialize() (our machdep/pegasos2/of/machdep.c) to
+	 * set up the malloc pool, then builds the Environ, runs the
+	 * default startup script (probe-all / install-console / banner),
+	 * and enters the interpret() read-eval loop.
+	 *
+	 * Commit 4 just makes the call.  Commits 5..N observe what
+	 * actually happens and fix issues one at a time until we reach
+	 * the `ok` prompt.  If main() returns (e.g. SF decides to exit),
+	 * we fall through to an infinite loop rather than returning to
+	 * the caller -- reset.S did not set up a back-chain for us.
+	 */
+	extern int main(int argc, char **argv);
 
+	uart_puts(UART1_BASE,
+		  "\nPhase 1 complete. Handing off to OpenFirmware...\n"
+		  "=============================================\n\n");
+
+	(void)main(0, (char **)0);
+
+	uart_puts(UART1_BASE, "\n(OF main() returned -- halting)\n");
 	for (;;)
 		;
 }

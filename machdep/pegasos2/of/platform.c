@@ -206,9 +206,13 @@ const Initentry *init_list[] = {
  * executes once, in order, to bring up the associated package.
  * We include the "must-have for ok prompt" minimum:
  *   install_root         creates /            (must be first)
- *   install_memory       creates /memory      (must be second)
+ *   install_chosen       creates /chosen      (must be second --
+ *                        install_memory references e->chosen->props
+ *                        to publish its instance, and the amd64 /
+ *                        coldfire / edb7312 ports all document
+ *                        "install_chosen should be second")
+ *   install_memory       creates /memory
  *   init_options_from_nvram   pulls NVRAM env vars into /options
- *   install_chosen       creates /chosen
  *   install_powerpc_cpu  creates /cpu
  *   install_display      creates /display (stubbed without fb.c)
  *   install_failsafe     creates the failsafe console package
@@ -218,18 +222,18 @@ const Initentry *init_list[] = {
  *   install_deblocker, install_disklabel
  */
 EC(install_root);
+EC(install_chosen);
 EC(install_memory);
 EC(init_options_from_nvram);
-EC(install_chosen);
 EC(install_powerpc_cpu);
 EC(install_display);
 EC(install_failsafe);
 
 const Command install_list[] = {
 	install_root,
+	install_chosen,
 	install_memory,
 	init_options_from_nvram,
-	install_chosen,
 	install_powerpc_cpu,
 	install_display,
 	install_failsafe,

@@ -59,12 +59,27 @@ extern volatile uint32_t _ms_tick_count;
  * --------------------------------------------------------------- */
 
 /*
- * The malloc pool lives in a fixed DRAM region above our existing
- * phase-1 scratch (0..0x100000), .data/.bss (0x100000..0x200000),
- * and x86emu buffer (0x200000..0x300000). Size == MALLOC_POOL from
- * machdep.h (4 MiB currently), so the pool ends at 0x00700000.
+ * Memory layout on QEMU -m 512 (other sizes TBD):
+ *
+ *   0x00000000..0x001FFFFF  exception vectors, stack, .data, .bss
+ *   0x00200000..0x002FFFFF  x86 emulator buffer (X86EMU_MEM_PADDR)
+ *   0x00300000..0x006FFFFF  OF malloc pool (init_malloc backing)
+ *   0x00700000..0x1FFFFFFF  OS-available DRAM (reported by /memory
+ *                            through the available/claim allocator)
+ *
+ * g_machine_memory points at the malloc-pool start and also serves as
+ * the base of the /memory node's "reg". g_machine_memory_size is
+ * total /memory extent (pool + OS-available), and g_machine_memory_used
+ * is the amount install_memory's memory-claim reserves -- i.e. the
+ * malloc pool itself, so the OS free list excludes it.
+ *
+ * Value choices hard-coded to the 512 MiB QEMU DRAM until real HW
+ * brings in a DDR-probe driver; machine_initialize() can be made
+ * size-adaptive later.
  */
-#define PEGASOS2_MEM_POOL_BASE  0x00300000u
+#define PEGASOS2_MEM_POOL_BASE   0x00300000u
+#define PEGASOS2_DRAM_TOP        0x20000000u     /* QEMU -m 512 ceiling */
+#define PEGASOS2_MEM_REPORT_SIZE (PEGASOS2_DRAM_TOP - PEGASOS2_MEM_POOL_BASE)
 
 Byte *g_machine_memory         = NULL;
 uInt  g_machine_memory_size    = 0;
@@ -125,8 +140,8 @@ Retcode
 machine_initialize(void)
 {
 	g_machine_memory        = (Byte *)PEGASOS2_MEM_POOL_BASE;
-	g_machine_memory_size   = MALLOC_POOL;
-	g_machine_memory_used   = 0;
+	g_machine_memory_size   = PEGASOS2_MEM_REPORT_SIZE;
+	g_machine_memory_used   = MALLOC_POOL;
 	g_machine_memory_offset = 0;
 
 	return init_malloc(g_machine_memory, MALLOC_POOL);
@@ -385,14 +400,28 @@ dprintf(const char *fmt, ...)
 {
 	char buf[512];
 	va_list ap;
-	Int n;
+	Int i;
 
+	/*
+	 * vbprintf's return value is unreliable: its last line is
+	 * `return strlen(buf);` where `buf` has been advanced through
+	 * the formatting loop, so it points at the NUL terminator and
+	 * strlen always returns 0.  SF's own cprintf / bprintf / etc.
+	 * workarounds for this by walking buf themselves until '\0'.
+	 * We do the same: NUL-terminate defensively before the call
+	 * (vbprintf also writes a NUL on exit), then walk buf for the
+	 * true byte count.
+	 */
+	buf[0] = '\0';
 	va_start(ap, fmt);
-	n = (Int)vbprintf(buf, fmt, ap);
+	(void)vbprintf(buf, fmt, ap);
 	va_end(ap);
 
-	if (n > 0)
-		failsafe_write((Byte *)buf, n);
+	for (i = 0; i < (Int)sizeof buf && buf[i]; i++)
+		;
+
+	if (i > 0)
+		failsafe_write((Byte *)buf, i);
 }
 
 /*

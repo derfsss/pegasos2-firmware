@@ -8,59 +8,19 @@
  *
  *  Freestanding libc stubs for the vendored x86emu core.
  *
- *  Scope: the minimum set of symbols the emulator requires to LINK.
- *  Current milestone does not execute the emulator at runtime, so
- *  printf/sprintf are no-ops. When Phase 2 wires the emulator to a
- *  real Option ROM loader we will route printf to the UART and give
- *  sprintf a real implementation (or remove its callers).
+ *  Scope: the minimum set of symbols the emulator requires to LINK
+ *  that nobody else provides. As of Commit 4 of the OF bring-up,
+ *  SmartFirmware's stdlib.c supplies memset/memcpy/memmove/strlen
+ *  (and others) for the whole firmware -- so those definitions live
+ *  there now, not here, to avoid multiple-definition at link time.
+ *  The x86emu never calls printf/sprintf at runtime in our use
+ *  (option-ROM path emits output via the ROM's own BIOS services),
+ *  so the remaining stubs are no-ops and keep the emulator linkable.
  */
 
 #include <stddef.h>
 #include <stdarg.h>
 #include <stdint.h>
-
-void *memset(void *s, int c, size_t n)
-{
-	unsigned char *p = (unsigned char *)s;
-	while (n--)
-		*p++ = (unsigned char)c;
-	return s;
-}
-
-void *memcpy(void *dst, const void *src, size_t n)
-{
-	unsigned char       *d = (unsigned char       *)dst;
-	const unsigned char *s = (const unsigned char *)src;
-	while (n--)
-		*d++ = *s++;
-	return dst;
-}
-
-void *memmove(void *dst, const void *src, size_t n)
-{
-	unsigned char       *d = (unsigned char       *)dst;
-	const unsigned char *s = (const unsigned char *)src;
-	if (d == s || n == 0)
-		return dst;
-	if (d < s) {
-		while (n--)
-			*d++ = *s++;
-	} else {
-		d += n;
-		s += n;
-		while (n--)
-			*--d = *--s;
-	}
-	return dst;
-}
-
-size_t strlen(const char *s)
-{
-	const char *p = s;
-	while (*p)
-		p++;
-	return (size_t)(p - s);
-}
 
 int printf(const char *fmt, ...)
 {

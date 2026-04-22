@@ -6,12 +6,15 @@ Read it after `CLAUDE.md` and `docs/START-HERE.md`.
 ## One-line status (2026-04-22)
 
 OF Forth runtime bring-up is in progress as a multi-commit
-series. Commits 1 (machdep.h scaffold), 2 (machdep.c stubs +
-of-test partial-link target), and 3 (full SF subset + platform
-glue, 230 KiB text, zero SF-side undefineds) are done;
-`firmware-raw.bin` is still unchanged. Commit 4 calls OF's
-main() from phase1 to find out where it hangs / crashes / halts.
-See the "OF bring-up sequence" section below.
+series. Commits 1..4 of N are done: machdep.h scaffold, machdep.c
+stubs + of-test partial-link target, full SF subset + platform
+glue, and now **OF actually runs from firmware.bin and reaches an
+`ok` prompt on UART1 via the failsafe output path**. Default boot
+emits ~71 KiB of mixed DPRINTF + Forth banner + `ok` prompt and
+then waits for keyboard input. Commit 5 will add a `/serial` node
+with polled UART RX so install-console finds a proper console
+and `interpret()` can actually process input. See the "OF bring-up
+sequence" section below.
 
 Phase 1 is substantively complete on QEMU. Both headline bugs
 (spec 09 Bug 1 and Bug 2) are implemented and pass their spec-
@@ -70,7 +73,8 @@ enabled in the default build.
 ## Commit history (as of this writing)
 
 ```
-(new)    OF bring-up 3/N: full SF subset + platform glue; of-test closes
+(new)    OF bring-up 4/N: OF runs from firmware.bin; reaches `ok` via failsafe
+1d9c910  OF bring-up 3/N: full SF subset + platform glue; of-test closes
 e208c6c  OF bring-up 2/N: machdep.c stubs + of-test partial-link target
 a0f0c6f  OF bring-up 1/N: SF machdep.h scaffold + 3-file subset compiles
 19bd9a7  Decrementer reload calibrated; _dec_reload runtime-configurable
@@ -281,23 +285,24 @@ maps it at `0xFFF00000..0xFFF7FFFF`. We build for QEMU's layout.
 A real-HW-ready build would need to either relocate to 0xFFF80000
 or ship two copies for aliasing -- this is a known open item.
 
+### 13. SmartFirmware `vbprintf` returns 0; callers must walk buf
+
+`upstream/smartfirmware/bin/of/stdlib.c:vbprintf` finishes with
+`return strlen(buf)` -- but `buf` has been advanced through the
+formatting loop so it points at the NUL terminator, and strlen
+returns 0. SF's own callers (cprintf, bprintf, etc.) ignore the
+return value and scan buf for the real length. Our machdep
+`dprintf` initially trusted the return, so no DPRINTF output
+appeared even though the buffer was correctly written.
+
+Fix in `machdep/pegasos2/of/machdep.c:dprintf`: NUL-seed the
+buffer before the call, walk it after.
+
 ### 12. `get_msecs` signature collides between timer.h and defs.h
 
-`machdep/pegasos2/timer.h` declares `uint32_t get_msecs(void)`;
-SmartFirmware's `defs.h` declares `uLong get_msecs(Environ *e)`.
-Same symbol name, different C signatures. As long as no single
-translation unit includes BOTH headers, each TU sees a coherent
-declaration and the two definitions can coexist at build time.
-But at LINK time they collide (duplicate definition of the symbol
-`get_msecs`). Our current builds don't hit it because:
-  - `firmware.bin` links `timer.o` but NOT `of_machdep.o`
-  - `of-test` (ld -r) links `of_machdep.o` but NOT `timer.o`
-
-Commit 6+ (phase1 hands off to SF's main()) will put both in the
-same firmware image. Resolution path: rename our phase1 version
-to `pegasos2_get_msecs_ticks()` and update the one phase1.c
-caller. The SF-shape version (defined in of/machdep.c) becomes
-the sole `get_msecs` symbol.
+Resolved in Commit 4: our phase-1 counter renamed to
+`pegasos2_get_msecs_ticks()`; SF's `get_msecs(Environ*)` (in
+other.c) is the sole `get_msecs` symbol.
 
 ### 11. `_dec_reload` must be non-zero before MSR[EE] is set
 
@@ -360,8 +365,9 @@ with OF behaviour until Commit 6+.
 | 1 | Scaffold: machdep.h + 3-file SF subset compiles | `make of-sf-subset` builds build/of_{errs,stdlib,alloc}.o; `make` produces identical firmware.bin |
 | 2 | Malloc pick + machdep stubs for the ~22 machine_* / failsafe_* / isa_* / do_* functions | `make of-test` partial-links SF subset + machdep.o; remaining undefineds are just our existing uart/_ms_tick_count (satisfied at commit 6 when we link into firmware.bin) |
 | 3 | Grow the SF subset (forth/funcs/exec/table/admin/control/cmdio/display/device/chosen/memory/root/cpu-ppc/packages/debug/nvedit/nvram + platform glue for init_list / install_list / g_nvram / machine_font / ppc_get_version) | `of-test` links with zero SF-side undefineds (only _ms_tick_count + uart_* remain, resolved at firmware link) |
-| 4 | Call into OF main() from phase1_c_main() | Boot prints SmartFirmware banner or `DPRINTF` output from machine_initialize(); halts somewhere observable |
-| 5..N | Fix observed failures one at a time (device-tree populate, console install, etc.) | Each commit snapshot adds one step's worth of serial output |
+| 4 | Call into OF main() from phase1_c_main() | ✅ DONE -- default boot emits full SF banner + `ok` prompt via failsafe output; install-console errors due to missing /serial node; interpret() reads 0 bytes from failsafe_read and idles |
+| 5 | /serial node + failsafe_read via polled UART RX | install-console picks /serial; typed input reaches interpret(); `42 .` echoes `42 ok` |
+| 6..N | Fix observed failures, tidy diagnostic prints, remove trace hooks, disable DPRINTF | DEBUG off by default; `ok` prompt appears without the interleaved trace |
 | Final | Enter the interpret() read-eval loop | `ok` prompt appears on UART1; simple Forth like `42 .` echoes |
 
 Decisions taken during the planning pass:

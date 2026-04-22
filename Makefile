@@ -49,7 +49,7 @@ LDFLAGS := \
     -Wl,--build-id=none \
     -Wl,-Map=$(BUILD)/firmware.map
 
-OBJS := \
+PHASE1_OBJS := \
     $(BUILD)/reset.o \
     $(BUILD)/exceptions.o \
     $(BUILD)/panic.o \
@@ -68,6 +68,12 @@ OBJS := \
     $(BUILD)/x86emu_decode.o \
     $(BUILD)/x86emu_sys.o \
     $(BUILD)/x86emu_debug.o
+
+# Commit-4 addition: now firmware.bin contains the SmartFirmware OF
+# runtime too. phase1_c_main() hands off to SF's main() after its
+# existing self-tests. OF_SUBSET and OF_MACHDEP_OBJS are defined
+# further down in this file.
+OBJS := $(PHASE1_OBJS)
 
 FIRMWARE := $(BUILD)/firmware-raw.bin
 ELF      := $(BUILD)/firmware.elf
@@ -195,6 +201,10 @@ OF_MACHDEP_OBJS := \
 
 $(BUILD)/of_platform.o: $(SF_MACHDEP)/platform.c | $(BUILD)
 	$(CC) $(SF_CFLAGS) -I$(MACHDEP) -c $< -o $@
+
+# Append OF to the firmware link target. phase1_c_main() calls SF's
+# main() directly; without these objects the link would fail.
+OBJS += $(OF_SUBSET) $(OF_MACHDEP_OBJS)
 
 # Commit-2 acceptance target: partial-link the SF subset with
 # machdep.o and report remaining undefined symbols. Those are the

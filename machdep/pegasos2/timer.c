@@ -31,7 +31,7 @@ void timer_calibrate(void)
 	 *
 	 * On QEMU the emulated time-base frequency is unrelated to
 	 * this value (QEMU picks its own TB rate for pegasos2), so
-	 * get_msecs() will not be wall-clock-accurate there. It is
+	 * pegasos2_get_msecs_ticks() will not be wall-clock-accurate there.  It is
 	 * still monotonically increasing, which is all the self-test
 	 * requires.
 	 */
@@ -49,7 +49,7 @@ void timer_arm(uint32_t ticks)
 	__asm__ volatile ("mtspr 22, %0" :: "r"(ticks) : "memory");
 }
 
-uint32_t get_msecs(void)
+uint32_t pegasos2_get_msecs_ticks(void)
 {
 	return _ms_tick_count;
 }

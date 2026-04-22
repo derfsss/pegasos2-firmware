@@ -51,8 +51,13 @@ uint32_t timer_ms_reload(void);
  * using the calibrated reload value. */
 void timer_arm(uint32_t ticks);
 
-/* Read the tick counter that the decrementer handler increments. */
-uint32_t get_msecs(void);
+/*
+ * Read the tick counter that the decrementer handler increments.
+ * Named to avoid a link-time collision with SmartFirmware's
+ * get_msecs(Environ*) in upstream/smartfirmware/bin/of/other.c
+ * (same symbol name, different C signature -- gotcha #12).
+ */
+uint32_t pegasos2_get_msecs_ticks(void);
 
 /* Toggle MSR[EE]. Wraps mfmsr/mtmsr in a sync/isync envelope so the
  * change is context-synchronising on MPC7447. */
