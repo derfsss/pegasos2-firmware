@@ -55,7 +55,8 @@ enabled in the default build.
 ## Commit history (as of this writing)
 
 ```
-(new)    Decrementer handler + MSR[ME]/[RI]; ms-tick API
+(new)    PCI walker: prefetchable-memory routing + bridge pref window
+23a5632  Decrementer handler + MSR[ME]/[RI]; ms-tick API
 cda478f  PCI walker: bridge MEM/IO window programming
 e59c2c7  PCI walker: BAR address assignment + cmd-register enable
 48ce9a7  PCI walker: BAR sizing (non-destructive probe)
@@ -79,7 +80,7 @@ cced4b5  Phase 1 banner on UART1
 | 1 | Build system | Done. Makefile + linker script + reset trampoline. |
 | 2 | CPU init + banner on UART1 | Done on QEMU. Exception vectors installed at 0x100..0x1300 with MSR[IP]=0, MSR[ME]=1, MSR[RI]=1. Decrementer (0x900) has a real handler + millisecond tick counter; ExtInt (0x500) and Syscall (0xC00) still panic-stubbed. Real-HW init (cache invalidate, BAT setup, clock-gen probe, TB calibration) deferred. |
 | 3 | DRAM init | Done on QEMU (QEMU pre-wires DRAM). Real-HW DDR init sequence (docs/02 §"DDR init sequence" steps 1–12, SPD probe, mode-register programming) is **not implemented**. |
-| 4 | PCI enumeration (Bug 2 fix) | Done. Spec 03 Tests #1 + #2 pass. Full PCI resource pipeline: sizing, BAR assignment, cmd-register enable, and bridge MEM/IO-window programming (BASE/LIMIT at 0x20/0x22 and 0x1C/0x1D, with allocator padding to 1 MiB / 4 KiB granularity around recursion so devices behind a bridge are reachable via CPU MMIO). Prefetchable window still shares the non-prefetch allocator; 64-bit-above-4 GiB not supported. |
+| 4 | PCI enumeration (Bug 2 fix) | Done. Spec 03 Tests #1 + #2 pass. Full PCI resource pipeline: sizing, BAR assignment with split non-prefetch/prefetch/IO allocators, cmd-register enable, and bridge MEM/PREFETCH/IO-window programming (BASE/LIMIT at 0x20/0x22, 0x24/0x26, 0x1C/0x1D; 1 MiB / 4 KiB granularity; disabled-LIMIT<BASE encoding when a window is unused). 64-bit-above-4 GiB BAR placement not supported (the CPU can't address that region; the firmware writes high-dword=0 for 64-bit BARs). |
 | 5 | VT8231 full init | Partial -- UART1 chain only. IDE, USB, AC'97, PM, SMBus, PIC are not initialised. |
 | 6 | OF Forth runtime | Not started. |
 | 7 | NVRAM (M48T59) | Not started. |
@@ -319,25 +320,15 @@ needs the IEEE-1275 client-interface entry point (spec 06) to
 dispatch to -- it's roughly 20 lines of asm but the body is the
 whole client interface, so land both together.
 
-**Prefetchable memory window + 64-bit BAR support.** The walker
-currently routes every memory BAR (prefetchable or not) through
-the bridge's non-prefetch window, and places every 64-bit BAR
-below 4 GiB with the high dword = 0. Splitting prefetch into its
-own allocator and window would let AGP-style framebuffers behind
-a bridge be forwarded with prefetch hints preserved. Making the
-high-half usable is only worth it once a device actually requires
-addresses >4 GiB (none of our QEMU test devices do).
+**OF Forth runtime bring-up.** The biggest remaining piece.
+`upstream/smartfirmware/bin/of/` ships the Forth interpreter and
+OF device-tree framework under CodeGen's source license (same
+license as our rewrite). A thin Pegasos2 machdep layer slots in;
+phase1 hands off to it instead of halting. Spec 05 §"install-
+console" (serial-first defaults, health-checked attach) is the
+headline feature. Multi-commit: machdep shim, OF build into the
+image, phase1 handoff, initial `ok` prompt.
 
-**Enable MSR[ME] and wire external-interrupt / decrementer
-handlers.** Vectors are installed (see gotcha 11 below), but all
-of them currently land in panic_dump. Spec 01 calls for:
-- MSR[ME]=1 so a bad bus cycle raises a recoverable machine
-  check instead of a CHECKSTOP.
-- External-interrupt (0x500) dispatch chain: MV64361 main/GPP
-  IC → VT8231 PIC → registered handler.
-- Decrementer (0x900) for a 1 ms tick + `get-msecs` Forth word.
-- Syscall (0xC00) for the IEEE-1275 client-interface trampoline
-  (spec 06).
 
 ### Mid-term, enables real work
 

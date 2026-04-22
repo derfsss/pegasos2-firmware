@@ -83,26 +83,34 @@ static void print_device(int depth, uint8_t bus, uint8_t dev, uint8_t fn,
 /* ---------- BAR sizing + assignment -------------------------- */
 
 /*
- * Running high-water allocators, one pair per host. PCI1 memory
+ * Running high-water allocators, one triple per host. PCI1 memory
  * uses the direct-mapped MV64361 mem0 alias starting at CPU (and
  * PCI-side) 0x80000000 -- a BAR value here is both the PCI-bus
- * address and the CPU physical address. PCI I/O on both hosts
- * uses the PCI-side number space starting at 0x1000 so that the
- * legacy-ISA ports (UART1 at 0x3F8, SuperIO index at 0x3F0, etc.)
- * stay free for the VT8231.
+ * address and the CPU physical address.
  *
- * PCI0 on QEMU has only the host bridge itself populated, so the
- * mem allocator there is never exercised today; it is kept
+ * The 1 GiB mem0 window splits in half to keep prefetchable BARs
+ * in their own range:
+ *   0x80000000..0x9FFFFFFF  non-prefetchable  (s_alloc_mem_next)
+ *   0xA0000000..0xBFFFFFFF  prefetchable      (s_alloc_pref_next)
+ * This matters on real HW: bridge prefetch forwarding should only
+ * cover addresses that the downstream device has marked prefetch,
+ * so the bridge's non-prefetch and prefetch windows must not
+ * overlap. On QEMU the split is cosmetic -- QEMU's model forwards
+ * whatever BASE/LIMIT claims -- but keeping them apart avoids
+ * future drift.
+ *
+ * PCI I/O on both hosts uses the PCI-side number space starting
+ * at 0x1000 so legacy-ISA ports (UART1 at 0x3F8, SuperIO index at
+ * 0x3F0, etc.) stay free for the VT8231.
+ *
+ * PCI0 on QEMU has only the host bridge itself populated, so none
+ * of these allocators are exercised on PCI0 today; they are kept
  * symmetric for when real HW (or a future QEMU) places devices
- * on PCI0.
- *
- * Bridge MEM/IO windows are NOT programmed here -- that requires
- * a two-pass algorithm (subtree totals before the bridge's own
- * base/limit can be written). Devices behind a bridge still get
- * BAR addresses; reaching them via MMIO will need that follow-up.
+ * there.
  */
-static uint32_t s_alloc_mem_next[2] = { 0x80000000u, 0x80000000u };
-static uint32_t s_alloc_io_next [2] = { 0x00001000u, 0x00001000u };
+static uint32_t s_alloc_mem_next [2] = { 0x80000000u, 0x80000000u };
+static uint32_t s_alloc_pref_next[2] = { 0xA0000000u, 0xA0000000u };
+static uint32_t s_alloc_io_next  [2] = { 0x00001000u, 0x00001000u };
 
 static uint32_t align_up(uint32_t v, uint32_t a)
 {
@@ -199,8 +207,17 @@ static unsigned probe_assign_and_print_bars(int host, uint8_t bus, uint8_t dev,
 						    addr_mask, &flags, &is_64);
 
 		if (size != 0) {
-			uint32_t *hw = is_io ? &s_alloc_io_next[host]
-					     : &s_alloc_mem_next[host];
+			/*
+			 * Route mem BARs into prefetch vs non-prefetch
+			 * based on the device's own flag (bit 3). IO BARs
+			 * go to the IO allocator regardless.
+			 */
+			const int pref = !is_io
+				      && (flags & PCI_BAR_MEM_PREFETCH) != 0;
+			uint32_t *hw =
+				is_io ? &s_alloc_io_next  [host] :
+				pref  ? &s_alloc_pref_next[host] :
+					&s_alloc_mem_next [host];
 			const uint32_t base = align_up(*hw, size);
 			*hw = base + size;
 
@@ -290,34 +307,55 @@ static uint8_t io_window_encode(uint32_t addr)
 	return (uint8_t)((addr >> 8) & 0xF0u);
 }
 
-static void bridge_program_window(int host, uint8_t bus, uint8_t dev,
-				  uint8_t fn,
-				  uint32_t mem_start, uint32_t mem_end,
-				  uint32_t io_start,  uint32_t io_end,
-				  int depth)
+/*
+ * Shared helper: program a 16-bit MEM-shaped base/limit pair
+ * (either PCI_BRIDGE_MEM_* or PCI_BRIDGE_PREFETCH_*) at 1 MiB
+ * granularity. Emits one "<label> <range>" chunk to UART1.
+ */
+static void bridge_mem_window_write(int host, uint8_t bus, uint8_t dev,
+				    uint8_t fn,
+				    uint8_t base_off, uint8_t limit_off,
+				    uint32_t start, uint32_t end,
+				    const char *label)
 {
-	put_indent(depth);
-	uart_puts(UART1_BASE, "  -> bridge windows: ");
+	uart_puts(UART1_BASE, label);
+	uart_puts(UART1_BASE, " ");
 
-	if (mem_end > mem_start) {
-		const uint16_t mb = mem_window_encode(mem_start);
-		const uint16_t ml = mem_window_encode(mem_end - 1u);
-		pci_cfg_write16(host, bus, dev, fn, PCI_BRIDGE_MEM_BASE,  mb);
-		pci_cfg_write16(host, bus, dev, fn, PCI_BRIDGE_MEM_LIMIT, ml);
-		uart_puts(UART1_BASE, "mem 0x");
-		uart_put_hex32(UART1_BASE, mem_start);
+	if (end > start) {
+		const uint16_t mb = mem_window_encode(start);
+		const uint16_t ml = mem_window_encode(end - 1u);
+		pci_cfg_write16(host, bus, dev, fn, base_off,  mb);
+		pci_cfg_write16(host, bus, dev, fn, limit_off, ml);
+		uart_puts(UART1_BASE, "0x");
+		uart_put_hex32(UART1_BASE, start);
 		uart_puts(UART1_BASE, "..0x");
 		uart_put_hex32(UART1_BASE,
 			       (uint32_t)((uint32_t)ml << 16) | 0xFFFFFu);
-		uart_puts(UART1_BASE, " ");
 	} else {
-		/* Disabled per PCI 2.3: LIMIT < BASE. */
-		pci_cfg_write16(host, bus, dev, fn, PCI_BRIDGE_MEM_BASE,
-				0xFFF0u);
-		pci_cfg_write16(host, bus, dev, fn, PCI_BRIDGE_MEM_LIMIT,
-				0x0000u);
-		uart_puts(UART1_BASE, "mem <disabled> ");
+		pci_cfg_write16(host, bus, dev, fn, base_off,  0xFFF0u);
+		pci_cfg_write16(host, bus, dev, fn, limit_off, 0x0000u);
+		uart_puts(UART1_BASE, "<disabled>");
 	}
+	uart_puts(UART1_BASE, " ");
+}
+
+static void bridge_program_window(int host, uint8_t bus, uint8_t dev,
+				  uint8_t fn,
+				  uint32_t mem_start,  uint32_t mem_end,
+				  uint32_t pref_start, uint32_t pref_end,
+				  uint32_t io_start,   uint32_t io_end,
+				  int depth)
+{
+	put_indent(depth);
+	uart_puts(UART1_BASE, "  -> bridge windows:");
+
+	bridge_mem_window_write(host, bus, dev, fn,
+				PCI_BRIDGE_MEM_BASE,  PCI_BRIDGE_MEM_LIMIT,
+				mem_start,  mem_end,  " mem");
+	bridge_mem_window_write(host, bus, dev, fn,
+				PCI_BRIDGE_PREFETCH_BASE,
+				PCI_BRIDGE_PREFETCH_LIMIT,
+				pref_start, pref_end, "pref");
 
 	if (io_end > io_start) {
 		const uint8_t ib = io_window_encode(io_start);
@@ -334,17 +372,6 @@ static void bridge_program_window(int host, uint8_t bus, uint8_t dev,
 		pci_cfg_write8(host, bus, dev, fn, PCI_BRIDGE_IO_LIMIT, 0x00u);
 		uart_puts(UART1_BASE, "io <disabled>");
 	}
-
-	/*
-	 * Our allocator doesn't separate prefetchable from non-prefetch,
-	 * so the bridge forwards everything through the non-prefetch
-	 * MEM window. Explicitly disable PREFETCH to avoid ambiguous
-	 * coverage if any reset default happens to be non-zero.
-	 */
-	pci_cfg_write16(host, bus, dev, fn, PCI_BRIDGE_PREFETCH_BASE,
-			0xFFF0u);
-	pci_cfg_write16(host, bus, dev, fn, PCI_BRIDGE_PREFETCH_LIMIT,
-			0x0000u);
 
 	uart_puts(UART1_BASE, "\n");
 }
@@ -413,18 +440,22 @@ static void pci_scan_function(struct walk_ctx *ctx, uint8_t bus,
 			       PCI_BRIDGE_BUS_SUBORDINATE, 0xFFu);
 
 		/*
-		 * Pad both allocators to the bridge-window granularity
-		 * BEFORE descending, so the subtree's first allocation
-		 * lines up with a window boundary. The saved *_start
-		 * values become the bridge's BASE; the allocator values
-		 * after the recursive walk become the bridge's LIMIT.
+		 * Pad all three allocators to the bridge-window
+		 * granularity BEFORE descending, so the subtree's first
+		 * allocation lines up with a window boundary. The saved
+		 * *_start values become the bridge's BASE; the allocator
+		 * values after the recursive walk become the bridge's
+		 * LIMIT. Prefetch uses the same 1 MiB MEM granularity.
 		 */
-		uint32_t mem_start = align_up(s_alloc_mem_next[ctx->host],
-					      BRIDGE_MEM_GRANULE);
-		uint32_t io_start  = align_up(s_alloc_io_next[ctx->host],
-					      BRIDGE_IO_GRANULE);
-		s_alloc_mem_next[ctx->host] = mem_start;
-		s_alloc_io_next [ctx->host] = io_start;
+		uint32_t mem_start  = align_up(s_alloc_mem_next [ctx->host],
+					       BRIDGE_MEM_GRANULE);
+		uint32_t pref_start = align_up(s_alloc_pref_next[ctx->host],
+					       BRIDGE_MEM_GRANULE);
+		uint32_t io_start   = align_up(s_alloc_io_next  [ctx->host],
+					       BRIDGE_IO_GRANULE);
+		s_alloc_mem_next [ctx->host] = mem_start;
+		s_alloc_pref_next[ctx->host] = pref_start;
+		s_alloc_io_next  [ctx->host] = io_start;
 
 		put_indent(depth);
 		uart_puts(UART1_BASE, "  -> recurse into bus 0x");
@@ -433,12 +464,14 @@ static void pci_scan_function(struct walk_ctx *ctx, uint8_t bus,
 
 		pci_scan_bus(ctx, secondary, depth + 1);
 
-		uint32_t mem_end = s_alloc_mem_next[ctx->host];
-		uint32_t io_end  = s_alloc_io_next [ctx->host];
+		uint32_t mem_end  = s_alloc_mem_next [ctx->host];
+		uint32_t pref_end = s_alloc_pref_next[ctx->host];
+		uint32_t io_end   = s_alloc_io_next  [ctx->host];
 
 		bridge_program_window(ctx->host, bus, dev, fn,
-				      mem_start, mem_end,
-				      io_start,  io_end,
+				      mem_start,  mem_end,
+				      pref_start, pref_end,
+				      io_start,   io_end,
 				      depth);
 
 		/*
@@ -448,12 +481,14 @@ static void pci_scan_function(struct walk_ctx *ctx, uint8_t bus,
 		 * bus no matter what BASE/LIMIT says. MASTER is already
 		 * set from the earlier probe_assign path; only MEM / IO
 		 * might still be clear if the bridge had no mem/io BAR
-		 * of its own.
+		 * of its own. Prefetch forwarding is also gated by
+		 * PCI_CMD_MEM (the same bit controls both windows).
 		 */
 		uint16_t fwd_cmd = pci_cfg_read16(ctx->host, bus, dev, fn,
 						  PCI_COMMAND);
-		if (mem_end > mem_start) fwd_cmd |= PCI_CMD_MEM;
-		if (io_end  > io_start ) fwd_cmd |= PCI_CMD_IO;
+		if (mem_end  > mem_start ) fwd_cmd |= PCI_CMD_MEM;
+		if (pref_end > pref_start) fwd_cmd |= PCI_CMD_MEM;
+		if (io_end   > io_start  ) fwd_cmd |= PCI_CMD_IO;
 		pci_cfg_write16(ctx->host, bus, dev, fn, PCI_COMMAND, fwd_cmd);
 
 		/*
@@ -467,6 +502,9 @@ static void pci_scan_function(struct walk_ctx *ctx, uint8_t bus,
 		if (mem_end > mem_start)
 			s_alloc_mem_next[ctx->host] =
 				align_up(mem_end, BRIDGE_MEM_GRANULE);
+		if (pref_end > pref_start)
+			s_alloc_pref_next[ctx->host] =
+				align_up(pref_end, BRIDGE_MEM_GRANULE);
 		if (io_end > io_start)
 			s_alloc_io_next[ctx->host] =
 				align_up(io_end, BRIDGE_IO_GRANULE);
