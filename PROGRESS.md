@@ -6,9 +6,10 @@ Read it after `CLAUDE.md` and `docs/START-HERE.md`.
 ## One-line status (2026-04-22)
 
 OF Forth runtime bring-up is in progress as a multi-commit
-series. Commit 1 (scaffold) compiles a minimal slice of the
-vendored SmartFirmware core against a fresh Pegasos2 machdep.h;
-nothing is linked into `firmware-raw.bin` yet. See the
+series. Commits 1 (machdep.h scaffold) and 2 (machdep.c stubs
++ of-test partial-link target) are done; `firmware-raw.bin`
+is still unchanged. Commit 3 will grow the SF subset to satisfy
+the inputs for main.c + its transitive closure. See the
 "OF bring-up sequence" section below.
 
 Phase 1 is substantively complete on QEMU. Both headline bugs
@@ -68,7 +69,8 @@ enabled in the default build.
 ## Commit history (as of this writing)
 
 ```
-(new)    OF bring-up 1/N: SF machdep.h scaffold + 3-file subset compiles
+(new)    OF bring-up 2/N: machdep.c stubs + of-test partial-link target
+a0f0c6f  OF bring-up 1/N: SF machdep.h scaffold + 3-file subset compiles
 19bd9a7  Decrementer reload calibrated; _dec_reload runtime-configurable
 ffaaf7c  Syscall (0xC00) trampoline + stub dispatcher
 80fd426  PCI walker: prefetchable-memory routing + bridge pref window
@@ -117,8 +119,9 @@ machdep/pegasos2/
 ├── panic.c              panic_dump(): UART1 register dump for unrecoverable exceptions
 ├── syscall.c            syscall_dispatch(): 0xC00 C-side stub (prints r3/srr0, returns 0xBABE in r3)
 ├── timer.c/h            get_msecs(), timer_arm(), enable_ei()/disable_ei() MSR[EE] toggles
-├── of/                  SmartFirmware OF machdep (commit 1: machdep.h only)
-│   └── machdep.h        types, constants, banner strings for upstream/smartfirmware/bin/of
+├── of/                  SmartFirmware OF machdep (commits 1-2)
+│   ├── machdep.h        types, constants, banner strings
+│   └── machdep.c        machine_* / failsafe_* / dprintf / u_sleep stubs
 ├── pegasos2.h           memory-map constants (flash, MV64361, PCI windows, UART)
 ├── io.h                 inline-asm MMIO accessors (BE + LE variants, byte)
 ├── uart16550.c/h        polled 16550 driver
@@ -275,6 +278,24 @@ maps it at `0xFFF00000..0xFFF7FFFF`. We build for QEMU's layout.
 A real-HW-ready build would need to either relocate to 0xFFF80000
 or ship two copies for aliasing -- this is a known open item.
 
+### 12. `get_msecs` signature collides between timer.h and defs.h
+
+`machdep/pegasos2/timer.h` declares `uint32_t get_msecs(void)`;
+SmartFirmware's `defs.h` declares `uLong get_msecs(Environ *e)`.
+Same symbol name, different C signatures. As long as no single
+translation unit includes BOTH headers, each TU sees a coherent
+declaration and the two definitions can coexist at build time.
+But at LINK time they collide (duplicate definition of the symbol
+`get_msecs`). Our current builds don't hit it because:
+  - `firmware.bin` links `timer.o` but NOT `of_machdep.o`
+  - `of-test` (ld -r) links `of_machdep.o` but NOT `timer.o`
+
+Commit 6+ (phase1 hands off to SF's main()) will put both in the
+same firmware image. Resolution path: rename our phase1 version
+to `pegasos2_get_msecs_ticks()` and update the one phase1.c
+caller. The SF-shape version (defined in of/machdep.c) becomes
+the sole `get_msecs` symbol.
+
 ### 11. `_dec_reload` must be non-zero before MSR[EE] is set
 
 The 0x900 handler reads its reload value from `_dec_reload`
@@ -334,7 +355,7 @@ with OF behaviour until Commit 6+.
 | # | Title | Exit criterion |
 |---|-------|----------------|
 | 1 | Scaffold: machdep.h + 3-file SF subset compiles | `make of-sf-subset` builds build/of_{errs,stdlib,alloc}.o; `make` produces identical firmware.bin |
-| 2 | Malloc pick + machdep stubs for the ~22 machine_* / failsafe_* / isa_* / do_* functions | SF links against an `of-test` target with no undefined symbols |
+| 2 | Malloc pick + machdep stubs for the ~22 machine_* / failsafe_* / isa_* / do_* functions | `make of-test` partial-links SF subset + machdep.o; remaining undefineds are just our existing uart/_ms_tick_count (satisfied at commit 6 when we link into firmware.bin) |
 | 3 | Grow the SF subset (forth/funcs/exec/table/admin/control/cmdio/display/device/chosen/memory/root/cpu/cpu-ppc/packages/debug/nvedit/nvram + whatever else the link needs) | `of-test` still links; source tree now has the full "minimum viable ok" subset |
 | 4 | Call into OF main() from phase1_c_main() | Boot prints SmartFirmware banner or `DPRINTF` output from machine_initialize(); halts somewhere observable |
 | 5..N | Fix observed failures one at a time (device-tree populate, console install, etc.) | Each commit snapshot adds one step's worth of serial output |

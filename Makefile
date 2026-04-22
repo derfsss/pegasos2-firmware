@@ -73,7 +73,7 @@ FIRMWARE := $(BUILD)/firmware-raw.bin
 ELF      := $(BUILD)/firmware.elf
 FLASH_SIZE := 524288
 
-.PHONY: all clean info disasm of-sf-subset
+.PHONY: all clean info disasm of-sf-subset of-test
 .SUFFIXES:
 
 all: $(FIRMWARE)
@@ -152,6 +152,29 @@ OF_SUBSET := \
 .PHONY: of-sf-subset
 of-sf-subset: $(OF_SUBSET)
 	@echo "  OF    subset compiled: $(words $(OF_SUBSET)) object(s)"
+
+# Commit-2 addition: the Pegasos2 machdep for SF. Compiled with
+# SF_CFLAGS (so SF's include path is primary) PLUS -I $(MACHDEP) so
+# our own pegasos2.h / uart16550.h / io.h resolve as siblings.
+$(BUILD)/of_machdep.o: $(SF_MACHDEP)/machdep.c | $(BUILD)
+	$(CC) $(SF_CFLAGS) -I$(MACHDEP) -c $< -o $@
+
+OF_MACHDEP_OBJS := $(BUILD)/of_machdep.o
+
+# Commit-2 acceptance target: partial-link the SF subset with
+# machdep.o and report remaining undefined symbols. Those are the
+# "not yet brought in" SF files; Commit 3 expands the subset to
+# satisfy them. Uses `ld -r` which permits undefined symbols; we
+# then `nm -u` the product to enumerate them.
+.PHONY: of-test
+of-test: $(OF_SUBSET) $(OF_MACHDEP_OBJS)
+	@echo "  LD -r  $(BUILD)/of-test.o"
+	@$(PREFIX)ld -r -o $(BUILD)/of-test.o $(OF_SUBSET) $(OF_MACHDEP_OBJS)
+	@echo "  --- Defined symbols ($(words $(OF_SUBSET) $(OF_MACHDEP_OBJS)) objects) ---"
+	@$(PREFIX)nm -g --defined-only $(BUILD)/of-test.o | head -5
+	@echo "  ..."
+	@echo "  --- Undefined symbols (inventory for Commit 3) ---"
+	@$(PREFIX)nm -u $(BUILD)/of-test.o | sort -u
 
 $(ELF): $(OBJS) $(MACHDEP)/firmware.ld | $(BUILD)
 	$(CC) $(LDFLAGS) $(OBJS) -o $@
