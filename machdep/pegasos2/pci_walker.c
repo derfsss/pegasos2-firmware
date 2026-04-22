@@ -80,6 +80,116 @@ static void print_device(int depth, uint8_t bus, uint8_t dev, uint8_t fn,
 	uart_puts(UART1_BASE, "\n");
 }
 
+/* ---------- BAR sizing -------------------------------------- */
+
+/*
+ * Non-destructive BAR probe per PCI 2.3 §6.2.5.1:
+ *    saved     <- read BAR
+ *    probe_val <- (saved & ~addr_mask) | addr_mask   (poke address bits)
+ *    write BAR <- probe_val
+ *    mask      <- read BAR
+ *    restore BAR <- saved
+ *    size      <- ~(mask & addr_mask) + 1
+ *
+ * Preserving the non-address bits during the probe matters for the
+ * ROM BAR (bit 0 = enable), where writing 0xFFFFFFFF would briefly
+ * enable ROM decode on an unpredictable address. Memory/I/O BARs
+ * have their low bits hardwired per PCI 2.3 §6.2.5, so the mask is
+ * a no-op for them.
+ *
+ * Returns size in bytes (0 if the BAR is unimplemented). On return,
+ * *flags_out holds the original BAR's low bits (type + prefetch);
+ * *is_64_out is 1 for 64-bit memory BARs (the caller skips the
+ * next BAR slot, which is the 64-bit high half).
+ */
+static uint32_t pci_bar_probe(int host, uint8_t bus, uint8_t dev, uint8_t fn,
+			      uint8_t offset, uint32_t addr_mask,
+			      uint32_t *flags_out, int *is_64_out)
+{
+	*is_64_out = 0;
+
+	uint32_t saved     = pci_cfg_read32(host, bus, dev, fn, offset);
+	uint32_t probe_val = (saved & ~addr_mask) | addr_mask;
+	pci_cfg_write32(host, bus, dev, fn, offset, probe_val);
+	uint32_t mask      = pci_cfg_read32(host, bus, dev, fn, offset);
+	pci_cfg_write32(host, bus, dev, fn, offset, saved);
+
+	*flags_out = saved & ~addr_mask;
+
+	if ((mask & addr_mask) == 0)
+		return 0;                  /* unimplemented BAR */
+
+	if (!(saved & PCI_BAR_SPACE_IO)
+	    && (saved & PCI_BAR_MEM_TYPE_MASK) == PCI_BAR_MEM_TYPE_64)
+		*is_64_out = 1;
+
+	return (uint32_t)(~(mask & addr_mask) + 1u);
+}
+
+static void print_mem_type(uint32_t flags, int is_64)
+{
+	const int pref = (flags & PCI_BAR_MEM_PREFETCH) != 0;
+	uart_puts(UART1_BASE, is_64 ? "mem64" : "mem32");
+	uart_puts(UART1_BASE, pref ? " pref" : "     ");
+}
+
+static void probe_and_print_bars(int host, uint8_t bus, uint8_t dev, uint8_t fn,
+				 uint8_t header_type, int depth)
+{
+	const uint8_t ht_kind = header_type & PCI_HEADER_TYPE_MASK;
+	const int num_bars =
+		(ht_kind == PCI_HTYPE_BRIDGE) ? PCI_BAR_COUNT_TYPE1
+					      : PCI_BAR_COUNT_TYPE0;
+
+	for (int i = 0; i < num_bars; i++) {
+		const uint8_t  offset    = PCI_BAR_0 + (uint8_t)(i * 4);
+		const uint32_t first_val = pci_cfg_read32(host, bus, dev, fn,
+							  offset);
+		const uint32_t addr_mask = (first_val & PCI_BAR_SPACE_IO)
+						? PCI_BAR_IO_ADDR_MASK
+						: PCI_BAR_MEM_ADDR_MASK;
+
+		uint32_t flags;
+		int      is_64;
+		const uint32_t size = pci_bar_probe(host, bus, dev, fn, offset,
+						    addr_mask, &flags, &is_64);
+
+		if (size != 0) {
+			put_indent(depth);
+			uart_puts(UART1_BASE, "      BAR");
+			uart_putc(UART1_BASE, '0' + i);
+			uart_puts(UART1_BASE, ": ");
+			if (flags & PCI_BAR_SPACE_IO)
+				uart_puts(UART1_BASE, "io        ");
+			else
+				print_mem_type(flags, is_64);
+			uart_puts(UART1_BASE, " size=0x");
+			uart_put_hex32(UART1_BASE, size);
+			uart_puts(UART1_BASE, "\n");
+		}
+
+		/* 64-bit BAR consumes the next slot as its high dword. */
+		if (is_64)
+			i++;
+	}
+
+	/* Expansion-ROM BAR. Offset differs between type-0 and type-1. */
+	const uint8_t rom_offset = (ht_kind == PCI_HTYPE_BRIDGE)
+					? PCI_ROM_BAR_TYPE1
+					: PCI_ROM_BAR_TYPE0;
+	uint32_t rom_flags;
+	int      rom_is_64;
+	const uint32_t rom_size = pci_bar_probe(host, bus, dev, fn, rom_offset,
+						PCI_ROM_BAR_ADDR_MASK,
+						&rom_flags, &rom_is_64);
+	if (rom_size != 0) {
+		put_indent(depth);
+		uart_puts(UART1_BASE, "      ROM : rom        size=0x");
+		uart_put_hex32(UART1_BASE, rom_size);
+		uart_puts(UART1_BASE, "\n");
+	}
+}
+
 /* ---------- enumeration ------------------------------------- */
 
 /* Shared per-host bus-number allocator. Handed to every nested call
@@ -110,6 +220,7 @@ static void pci_scan_function(struct walk_ctx *ctx, uint8_t bus,
 	uint8_t  ht_kind     = header_type & PCI_HEADER_TYPE_MASK;
 
 	print_device(depth, bus, dev, fn, vendor, device, class, header_type);
+	probe_and_print_bars(ctx->host, bus, dev, fn, header_type, depth);
 
 	if (ht_kind == PCI_HTYPE_BRIDGE && class == PCI_CLASS_BRIDGE_PCI) {
 		uint8_t secondary = ctx->next_bus++;

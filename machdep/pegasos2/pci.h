@@ -61,4 +61,24 @@
 /* Sentinel vendor ID for "no device at this slot". */
 #define PCI_VENDOR_INVALID      0xFFFFu
 
+/* Base Address Register layout (PCI 2.3 §6.2.5). */
+#define PCI_BAR_0               0x10u
+#define PCI_BAR_COUNT_TYPE0     6        /* type-0 devices expose BAR0..BAR5 */
+#define PCI_BAR_COUNT_TYPE1     2        /* bridges expose BAR0..BAR1 only  */
+
+#define PCI_BAR_SPACE_IO        0x00000001u   /* bit 0: 1=I/O, 0=memory      */
+#define PCI_BAR_MEM_TYPE_MASK   0x00000006u   /* bits 2..1 for memory BARs   */
+#define PCI_BAR_MEM_TYPE_32     0x00000000u
+#define PCI_BAR_MEM_TYPE_1M     0x00000002u   /* deprecated "below 1 MiB"    */
+#define PCI_BAR_MEM_TYPE_64     0x00000004u
+#define PCI_BAR_MEM_PREFETCH    0x00000008u   /* bit 3: prefetchable memory  */
+#define PCI_BAR_MEM_ADDR_MASK   0xFFFFFFF0u
+#define PCI_BAR_IO_ADDR_MASK    0xFFFFFFFCu
+
+/* Expansion-ROM BAR: type-0 at 0x30, type-1 (bridge) at 0x38. */
+#define PCI_ROM_BAR_TYPE0       0x30u
+#define PCI_ROM_BAR_TYPE1       0x38u
+#define PCI_ROM_BAR_ENABLE      0x00000001u
+#define PCI_ROM_BAR_ADDR_MASK   0xFFFFF800u   /* bits 31..11 are the address */
+
 #endif
