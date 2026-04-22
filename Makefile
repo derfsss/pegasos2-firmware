@@ -133,21 +133,51 @@ SF_CFLAGS := \
     -Wno-unused-but-set-variable -Wno-parentheses \
     -Wno-implicit-fallthrough -Wno-char-subscripts \
     -Wno-pointer-sign -Wno-maybe-uninitialized \
+    -Wno-shift-count-overflow -Wno-address \
     -I$(SF_MACHDEP) \
     -I$(SF) \
+    -I$(SF)/exe \
     -DDEBUG \
     -U_FORTIFY_SOURCE
 
 $(BUILD)/of_%.o: $(SF)/%.c | $(BUILD)
 	$(CC) $(SF_CFLAGS) -c $< -o $@
 
-# Commit-1 SF subset: minimal dependency cone of three files that
-# don't transitively require machine_* functions. Building this is
-# the acceptance criterion for the commit.
+# OF_SUBSET: the "minimum viable ok" closure of SmartFirmware's
+# portable core.  Grew from 3 files in Commit 1 to the full core in
+# Commit 3.  Deferred out (to be added only when their consumer
+# arrives):
+#   fb.c (framebuffer), deblock.c disklbl.c (block/disk),
+#   obptftp.c (TFTP), token.c (Fcode tokenizer dev tool),
+#   client.c (IEEE-1275 client interface -- spec 06),
+#   sun.c stlb.c (Sun OBP compat), jedec.c flash_*.c gflash.c
+#   (flash driver), exe/* (ELF/COFF/aout loaders), fs/*, pci/*,
+#   isa/*, scsi/*, usb/*.
 OF_SUBSET := \
     $(BUILD)/of_errs.o \
     $(BUILD)/of_stdlib.o \
-    $(BUILD)/of_alloc.o
+    $(BUILD)/of_alloc.o \
+    $(BUILD)/of_failsafe.o \
+    $(BUILD)/of_main.o \
+    $(BUILD)/of_table.o \
+    $(BUILD)/of_forth.o \
+    $(BUILD)/of_exec.o \
+    $(BUILD)/of_funcs.o \
+    $(BUILD)/of_funcs64.o \
+    $(BUILD)/of_cmdio.o \
+    $(BUILD)/of_control.o \
+    $(BUILD)/of_display.o \
+    $(BUILD)/of_admin.o \
+    $(BUILD)/of_debug.o \
+    $(BUILD)/of_packages.o \
+    $(BUILD)/of_other.o \
+    $(BUILD)/of_device.o \
+    $(BUILD)/of_chosen.o \
+    $(BUILD)/of_memory.o \
+    $(BUILD)/of_root.o \
+    $(BUILD)/of_cpu-ppc.o \
+    $(BUILD)/of_nvedit.o \
+    $(BUILD)/of_nvram.o
 
 .PHONY: of-sf-subset
 of-sf-subset: $(OF_SUBSET)
@@ -159,7 +189,12 @@ of-sf-subset: $(OF_SUBSET)
 $(BUILD)/of_machdep.o: $(SF_MACHDEP)/machdep.c | $(BUILD)
 	$(CC) $(SF_CFLAGS) -I$(MACHDEP) -c $< -o $@
 
-OF_MACHDEP_OBJS := $(BUILD)/of_machdep.o
+OF_MACHDEP_OBJS := \
+    $(BUILD)/of_machdep.o \
+    $(BUILD)/of_platform.o
+
+$(BUILD)/of_platform.o: $(SF_MACHDEP)/platform.c | $(BUILD)
+	$(CC) $(SF_CFLAGS) -I$(MACHDEP) -c $< -o $@
 
 # Commit-2 acceptance target: partial-link the SF subset with
 # machdep.o and report remaining undefined symbols. Those are the

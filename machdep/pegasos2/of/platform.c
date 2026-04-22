@@ -1,0 +1,237 @@
+/*
+ *  Copyright (c) 2026 Pegasos2 clean-room rewrite contributors.
+ *  All rights reserved.
+ *
+ *  Redistribution and use in source and binary forms, with or without
+ *  modification, are permitted under the terms of the CodeGen source
+ *  license reproduced in LICENSES/CodeGen-smartfirmware.txt.
+ *
+ *  Platform glue for the SmartFirmware OF runtime. This file provides
+ *  the per-port tables (init_list, install_list), Forth-word stubs
+ *  (machine_font, machine_probe_all, ...), CPU-version reader, and the
+ *  initial NVRAM template -- things bebox/amd64/i386 ports put in
+ *  their machdep.c but that we kept separate from our machine_*
+ *  interface definitions to limit file size.
+ */
+
+#include "defs.h"
+
+/* --------------------------------------------------------------- *
+ *  Default NVRAM contents (g_nvram)                                 *
+ * --------------------------------------------------------------- */
+
+/*
+ * SmartFirmware's nvram.c declares `extern struct nvram_data g_nvram[]`
+ * and iterates until it sees a NULL .name terminator. We ship an empty
+ * table for now (just the sentinel); all OF env vars fall back to
+ * compile-time defaults in admin.c / packages.c / etc. When the M48T59
+ * driver lands, machine_nvram_read fills in overrides.
+ */
+struct nvram_data {
+	char *name;
+	char *val;
+};
+
+struct nvram_data g_nvram[] = {
+	{ "real-mode?",           "false"     },
+	{ "security-mode",        "none"      },
+	{ "input-device",         "serial"    },
+	{ "output-device",        "serial"    },
+	{ "auto-boot?",           "false"     },  /* no boot path yet */
+	{ "use-nvramrc?",         "false"     },
+	{ NULL, NULL }                              /* terminator */
+};
+
+/* --------------------------------------------------------------- *
+ *  Default font for machine_font                                    *
+ * --------------------------------------------------------------- */
+
+static Byte g_default_font[] = {
+#include FONT_FILE
+};
+
+/*
+ * Forth word: machine-font (-- addr width height advance min-char
+ * #glyphs ). Pushes the compiled-in default font descriptor on the
+ * data stack. Needed by fb.c / display.c; the `IFCKSP` macro checks
+ * stack headroom before the 6 pushes.
+ */
+CC(machine_font)
+{
+	IFCKSP(e, 0, 6);
+	PUSH(e, g_default_font);
+	PUSH(e, FONT_WIDTH);
+	PUSH(e, FONT_HEIGHT);
+	PUSH(e, FONT_ADVANCE);
+	PUSH(e, FONT_FIRST);
+	PUSH(e, FONT_COUNT);
+	return NO_ERROR;
+}
+
+/* --------------------------------------------------------------- *
+ *  Forth-word stubs expected by the machdep interface               *
+ * --------------------------------------------------------------- */
+
+/*
+ * The EC() macros in defs.h declare these as extern Retcode fns. A
+ * working port provides real ones; we stub them for now so the link
+ * resolves. Commit 6+ replaces these with real behaviour.
+ *
+ *   machine_probe_all      -- "probe-all" device-tree walker hook
+ *   machine_secondary_diag -- extended diagnostics
+ *   machine_init_program   -- fixup-on-load for an executable image
+ *   machine_go             -- jump-to-loaded-binary helper
+ *   machine_init_load      -- prep-the-loader, for "load-base" etc.
+ */
+CC(machine_probe_all)       { (void)e; return NO_ERROR; }
+CC(machine_secondary_diag)  { (void)e; return NO_ERROR; }
+CC(machine_init_program)    { (void)e; return NO_ERROR; }
+CC(machine_go)              { (void)e; return NO_ERROR; }
+CC(machine_init_load)       { (void)e; return NO_ERROR; }
+
+/* --------------------------------------------------------------- *
+ *  Stubs for exe/ symbol-lookup helpers                             *
+ * --------------------------------------------------------------- */
+
+/*
+ * debug.c and exec.c call exec_addr2sym / exec_sym2addr / exec_length
+ * for developer-level symbol lookup on loaded images. Their real
+ * implementations live in upstream/smartfirmware/bin/of/exe/exe.c
+ * which we defer (its transitive closure pulls in ELF/COFF/a.out
+ * loaders we don't need for the ok prompt).
+ *
+ * Returning NULL / 0 keeps the callers on their "not found" path,
+ * which is the correct behaviour when no image has been loaded yet.
+ * The real file can replace these stubs at a later commit.
+ */
+struct Sym_ent;  /* opaque -- defined in exe/exe.h */
+
+struct Sym_ent *
+exec_addr2sym(Environ *e, void *list, Cell addr)
+{
+	(void)e; (void)list; (void)addr;
+	return NULL;
+}
+
+struct Sym_ent *
+exec_sym2addr(Environ *e, void *list, Byte *name, Int len)
+{
+	(void)e; (void)list; (void)name; (void)len;
+	return NULL;
+}
+
+Retcode
+exec_length(Environ *e, Cell *out)
+{
+	(void)e;
+	if (out) *out = 0;
+	return NO_ERROR;
+}
+
+/* --------------------------------------------------------------- *
+ *  logo_pixmap placeholder                                          *
+ * --------------------------------------------------------------- */
+
+/*
+ * admin.c's banner path references logo_pixmap[] as a default OEM
+ * logo. The block is gated by `if (logo)` which is derived from
+ * NVRAM config -- with our empty g_nvram, logo stays 0 and the
+ * pixmap is never dereferenced. Supply a 1-byte placeholder so the
+ * link resolves.
+ */
+Byte logo_pixmap[1] = { 0 };
+
+/* --------------------------------------------------------------- *
+ *  ppc_get_version                                                  *
+ * --------------------------------------------------------------- */
+
+/*
+ * Called by cpu-ppc.c to fill in the /cpu "cpu-version" property.
+ * SPR 287 == PVR; the upper 16 bits identify the core family, the
+ * lower 16 bits the sub-revision. On our MPC7447A-flavoured QEMU
+ * the value is 0x80020102.
+ */
+uInt
+ppc_get_version(void)
+{
+	uInt pvr;
+	__asm__ volatile ("mfspr %0, 287" : "=r"(pvr));
+	return pvr;
+}
+
+/* --------------------------------------------------------------- *
+ *  init_list -- per-file Forth-word init tables                     *
+ * --------------------------------------------------------------- */
+
+/*
+ * Each init_<name> symbol below is defined in the bin/of/<name>.c
+ * file's init_<name>_table[] via the INIT_TABLE() macro. table.c
+ * reads this array to register all the Forth words the runtime
+ * knows about.
+ *
+ * We only list the tables whose .c files are in our OF_SUBSET --
+ * trimming fb / tokenizer etc. until those files come in.
+ */
+extern const Initentry init_funcs[];
+extern const Initentry init_funcs64[];
+extern const Initentry init_control[];
+extern const Initentry init_packages[];
+extern const Initentry init_forth[];
+extern const Initentry init_admin[];
+extern const Initentry init_nvedit[];
+extern const Initentry init_other[];
+extern const Initentry init_device[];
+extern const Initentry init_debug[];
+
+const Initentry *init_list[] = {
+	init_funcs,
+	init_funcs64,
+	init_control,
+	init_packages,
+	init_forth,
+	init_admin,
+	init_nvedit,
+	init_other,
+	init_device,
+	init_debug,
+	NULL
+};
+
+/* --------------------------------------------------------------- *
+ *  install_list -- package/method installers run at init time      *
+ * --------------------------------------------------------------- */
+
+/*
+ * Each entry is a Forth word that table.c's init_forth_words()
+ * executes once, in order, to bring up the associated package.
+ * We include the "must-have for ok prompt" minimum:
+ *   install_root         creates /            (must be first)
+ *   install_memory       creates /memory      (must be second)
+ *   init_options_from_nvram   pulls NVRAM env vars into /options
+ *   install_chosen       creates /chosen
+ *   install_powerpc_cpu  creates /cpu
+ *   install_display      creates /display (stubbed without fb.c)
+ *   install_failsafe     creates the failsafe console package
+ *
+ * Deferred until their owning .c files land:
+ *   install_stdio, install_pci, install_obptftp,
+ *   install_deblocker, install_disklabel
+ */
+EC(install_root);
+EC(install_memory);
+EC(init_options_from_nvram);
+EC(install_chosen);
+EC(install_powerpc_cpu);
+EC(install_display);
+EC(install_failsafe);
+
+const Command install_list[] = {
+	install_root,
+	install_memory,
+	init_options_from_nvram,
+	install_chosen,
+	install_powerpc_cpu,
+	install_display,
+	install_failsafe,
+	NULL
+};

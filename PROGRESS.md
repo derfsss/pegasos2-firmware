@@ -6,11 +6,12 @@ Read it after `CLAUDE.md` and `docs/START-HERE.md`.
 ## One-line status (2026-04-22)
 
 OF Forth runtime bring-up is in progress as a multi-commit
-series. Commits 1 (machdep.h scaffold) and 2 (machdep.c stubs
-+ of-test partial-link target) are done; `firmware-raw.bin`
-is still unchanged. Commit 3 will grow the SF subset to satisfy
-the inputs for main.c + its transitive closure. See the
-"OF bring-up sequence" section below.
+series. Commits 1 (machdep.h scaffold), 2 (machdep.c stubs +
+of-test partial-link target), and 3 (full SF subset + platform
+glue, 230 KiB text, zero SF-side undefineds) are done;
+`firmware-raw.bin` is still unchanged. Commit 4 calls OF's
+main() from phase1 to find out where it hangs / crashes / halts.
+See the "OF bring-up sequence" section below.
 
 Phase 1 is substantively complete on QEMU. Both headline bugs
 (spec 09 Bug 1 and Bug 2) are implemented and pass their spec-
@@ -69,7 +70,8 @@ enabled in the default build.
 ## Commit history (as of this writing)
 
 ```
-(new)    OF bring-up 2/N: machdep.c stubs + of-test partial-link target
+(new)    OF bring-up 3/N: full SF subset + platform glue; of-test closes
+e208c6c  OF bring-up 2/N: machdep.c stubs + of-test partial-link target
 a0f0c6f  OF bring-up 1/N: SF machdep.h scaffold + 3-file subset compiles
 19bd9a7  Decrementer reload calibrated; _dec_reload runtime-configurable
 ffaaf7c  Syscall (0xC00) trampoline + stub dispatcher
@@ -119,9 +121,10 @@ machdep/pegasos2/
 ├── panic.c              panic_dump(): UART1 register dump for unrecoverable exceptions
 ├── syscall.c            syscall_dispatch(): 0xC00 C-side stub (prints r3/srr0, returns 0xBABE in r3)
 ├── timer.c/h            get_msecs(), timer_arm(), enable_ei()/disable_ei() MSR[EE] toggles
-├── of/                  SmartFirmware OF machdep (commits 1-2)
+├── of/                  SmartFirmware OF machdep (commits 1-3)
 │   ├── machdep.h        types, constants, banner strings
-│   └── machdep.c        machine_* / failsafe_* / dprintf / u_sleep stubs
+│   ├── machdep.c        machine_* / failsafe_* / dprintf / u_sleep stubs
+│   └── platform.c       init_list / install_list / g_nvram / machine_font / exe-stubs / ppc_get_version
 ├── pegasos2.h           memory-map constants (flash, MV64361, PCI windows, UART)
 ├── io.h                 inline-asm MMIO accessors (BE + LE variants, byte)
 ├── uart16550.c/h        polled 16550 driver
@@ -356,7 +359,7 @@ with OF behaviour until Commit 6+.
 |---|-------|----------------|
 | 1 | Scaffold: machdep.h + 3-file SF subset compiles | `make of-sf-subset` builds build/of_{errs,stdlib,alloc}.o; `make` produces identical firmware.bin |
 | 2 | Malloc pick + machdep stubs for the ~22 machine_* / failsafe_* / isa_* / do_* functions | `make of-test` partial-links SF subset + machdep.o; remaining undefineds are just our existing uart/_ms_tick_count (satisfied at commit 6 when we link into firmware.bin) |
-| 3 | Grow the SF subset (forth/funcs/exec/table/admin/control/cmdio/display/device/chosen/memory/root/cpu/cpu-ppc/packages/debug/nvedit/nvram + whatever else the link needs) | `of-test` still links; source tree now has the full "minimum viable ok" subset |
+| 3 | Grow the SF subset (forth/funcs/exec/table/admin/control/cmdio/display/device/chosen/memory/root/cpu-ppc/packages/debug/nvedit/nvram + platform glue for init_list / install_list / g_nvram / machine_font / ppc_get_version) | `of-test` links with zero SF-side undefineds (only _ms_tick_count + uart_* remain, resolved at firmware link) |
 | 4 | Call into OF main() from phase1_c_main() | Boot prints SmartFirmware banner or `DPRINTF` output from machine_initialize(); halts somewhere observable |
 | 5..N | Fix observed failures one at a time (device-tree populate, console install, etc.) | Each commit snapshot adds one step's worth of serial output |
 | Final | Enter the interpret() read-eval loop | `ok` prompt appears on UART1; simple Forth like `42 .` echoes |

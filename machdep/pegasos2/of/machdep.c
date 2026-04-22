@@ -132,12 +132,11 @@ machine_initialize(void)
 	return init_malloc(g_machine_memory, MALLOC_POOL);
 }
 
-Retcode
-machine_init_args(Environ *e, int argc, char *argv[])
-{
-	(void)e; (void)argc; (void)argv;
-	return NO_ERROR;
-}
+/*
+ * machine_init_args is NOT defined here -- SmartFirmware's nvram.c
+ * provides a portable implementation that decodes a "-parameter value"
+ * string vector into nvram overrides.  Redefining it would collide.
+ */
 
 /*
  * "reset-all" word target. `ba 0xFFF00100` jumps to the MPC7447 reset
@@ -413,17 +412,12 @@ u_sleep(uInt us)
 }
 
 /*
- * SF's "C drivers' convenience" signature of get_msecs takes an
- * Environ so it can be rehosted on systems where time comes from
- * a per-env struct. We return our global decrementer tick counter
- * and ignore the Environ.
+ * get_msecs(Environ *) is NOT defined here -- SF's other.c provides a
+ * portable implementation on top of machine_gettime().  Redefining it
+ * would collide at link time.  Our own 32-bit get_msecs(void) in
+ * timer.c has a different signature; the name still collides, tracked
+ * as gotcha #12 in PROGRESS.md.
  */
-uLong
-get_msecs(Environ *e)
-{
-	(void)e;
-	return (uLong)_ms_tick_count;
-}
 
 /* Client-interface callback hook; spec 06 wires this later. */
 int
