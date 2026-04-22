@@ -1489,6 +1489,39 @@ void x86emuOp2_movsx_word_R_RM(u8 X86EMU_UNUSED(op2))
     END_OF_INSTR();
 }
 
+/****************************************************************************
+REMARKS:
+Pegasos2 clean-room rewrite addition, 2026-04-22: 0F FE (PADDB MM, MM/m64).
+
+docs/09-known-bugs.md Bug 1 calls out 0F FE because VGA BIOSes have
+been observed using it for byte-parallel arithmetic on palette data.
+Upstream x86emu has no MMX register file, so implementing true
+PADDB semantics would require an invasive data-structure change.
+This handler instead decodes the ModR/M (and any following SIB /
+displacement) correctly so the instruction stream advances, then
+does nothing. A VGA BIOS that relied on the PADDB result would
+get incorrect palette contents, but would not halt the emulator.
+
+Upstream is otherwise unmodified; see VERSIONS.md.
+****************************************************************************/
+void x86emuOp2_paddb_MM_RM(u8 X86EMU_UNUSED(op2))
+{
+	int mod, rl, rh;
+
+	START_OF_INSTR();
+	DECODE_PRINTF("PADDB\t(stubbed)\n");
+	FETCH_DECODE_MODRM(mod, rh, rl);
+	(void)rh;
+	if (mod < 3) {
+		/* Consume the effective-address bytes; ignore the
+		 * resulting pointer -- the MMX store is a no-op. */
+		(void)decode_rmXX_address(mod, rl);
+	}
+	TRACE_AND_STEP();
+	DECODE_CLEAR_SEGOVR();
+	END_OF_INSTR();
+}
+
 /***************************************************************************
  * Double byte operation code table:
  **************************************************************************/
@@ -1763,6 +1796,6 @@ void (*x86emu_optab2[256])(u8) =
 /*  0xfb */ x86emuOp2_illegal_op,
 /*  0xfc */ x86emuOp2_illegal_op,
 /*  0xfd */ x86emuOp2_illegal_op,
-/*  0xfe */ x86emuOp2_illegal_op,
+/*  0xfe */ x86emuOp2_paddb_MM_RM,  /* Pegasos2 clean-room add */
 /*  0xff */ x86emuOp2_illegal_op,
 };

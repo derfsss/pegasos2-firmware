@@ -25,12 +25,17 @@ snapshots in use so the clean-room audit can reproduce them.
 - License: SciTech permissive — see `LICENSES/SciTech-x86emu.txt`
 - Obtained via: `tar xzf` then `cp -r drivers/bios_emulator/. upstream/x86emu/`
 - Files excluded: `Makefile` (U-Boot-specific, not reusable)
-- Local modifications: **none** at time of vendoring. Spec 09
-  requires additions — they go under `patches/x86emu/` as
-  separate patch files, never as edits to `upstream/x86emu/`
-  in place. Required patches (see docs/09-known-bugs.md §Bug 1
-  Required behaviour):
-    - `0F FE` opcode (PADDB)
+- Local modifications:
+    - **2026-04-22**  `x86emu/ops2.c` — added
+      `x86emuOp2_paddb_MM_RM` (no-op PADDB handler) and wired it
+      into `x86emu_optab2[0xFE]`. Satisfies docs/09-known-bugs.md
+      Bug 1 Required-behaviour bullet "0F FE". Upstream has no
+      MMX register file so full semantics are impractical; the
+      handler decodes the ModR/M+SIB correctly and does not halt.
+      Clearly attributed in the source file's new function
+      comment.
+- Pending spec-09 additions (not yet applied):
     - `0F 01` / `0F 20` / `0F 22` coverage verification
     - INT 10h fallback stubs for AH 0x00..0x1F
-    - BDA + IVT initialisation
+  (BDA + IVT initialisation is already supplied from outside the
+  vendored tree, in `machdep/pegasos2/x86_glue.c`.)

@@ -85,9 +85,11 @@ void phase1_c_main(void)
 	x86_glue_init();
 
 	static const uint8_t test_prog[] = {
-		0xB8, 0x34, 0x12,    /* MOV AX, 0x1234 */
-		0xBA, 0x78, 0x56,    /* MOV DX, 0x5678 */
-		0xF4                 /* HLT            */
+		0xB8, 0x42, 0x42,    /* MOV AX, 0x4242  (poison; overwritten below) */
+		0x0F, 0xFE, 0xC0,    /* PADDB MM0, MM0  (spec 09 Bug 1 0F FE)       */
+		0xB8, 0x34, 0x12,    /* MOV AX, 0x1234  (reachable iff 0F FE works) */
+		0xBA, 0x78, 0x56,    /* MOV DX, 0x5678                              */
+		0xF4                 /* HLT                                         */
 	};
 	uint8_t *dst = x86emu_mem(((uint32_t)0x1000 << 4) + 0);
 	for (unsigned i = 0; i < sizeof test_prog; i++)
