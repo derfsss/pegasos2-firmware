@@ -17,7 +17,7 @@ client interface) are NOT started.
 
 A successful boot of `build/firmware-raw.bin` on
 `qemu-system-ppc -M pegasos2 -m 512 -bios ... -serial ... -display none`
-produces **1,832 bytes** of serial output containing, in order:
+produces **1,940 bytes** of serial output containing, in order:
 
 1. Banner with PVR (0x80020102 = MPC7447A) and DRAM round-trip OK.
 2. Console address and stack pointer.
@@ -39,7 +39,11 @@ produces **1,832 bytes** of serial output containing, in order:
    MSR[EE] disabled, accumulated tick count reported (non-zero
    delta proves 0x900 handler runs and rfi's back). MSR[ME] and
    MSR[RI] are also set at reset time.
-8. Clean halt.
+8. Syscall round-trip: `li r3, 0x1337; sc; mr X, r3` + print.
+   0xC00 trampoline saves all 32 GPRs + SPRs, the C stub
+   syscall_dispatch() overwrites frame.gpr[3]=0xBABE, trampoline
+   restores and rfi's; the r3 read after sc shows 0xBABE.
+9. Clean halt.
 
 No `INTERNAL ERROR`, `UNHANDLED`, `Failed to emulate`, `STUCK
 CS:IP`, or `!! PANIC` strings appear anywhere in the default
@@ -55,7 +59,8 @@ enabled in the default build.
 ## Commit history (as of this writing)
 
 ```
-(new)    PCI walker: prefetchable-memory routing + bridge pref window
+(new)    Syscall (0xC00) trampoline + stub dispatcher
+80fd426  PCI walker: prefetchable-memory routing + bridge pref window
 23a5632  Decrementer handler + MSR[ME]/[RI]; ms-tick API
 cda478f  PCI walker: bridge MEM/IO window programming
 e59c2c7  PCI walker: BAR address assignment + cmd-register enable
@@ -78,7 +83,7 @@ cced4b5  Phase 1 banner on UART1
 | Step | Topic | Status |
 |---|---|---|
 | 1 | Build system | Done. Makefile + linker script + reset trampoline. |
-| 2 | CPU init + banner on UART1 | Done on QEMU. Exception vectors installed at 0x100..0x1300 with MSR[IP]=0, MSR[ME]=1, MSR[RI]=1. Decrementer (0x900) has a real handler + millisecond tick counter; ExtInt (0x500) and Syscall (0xC00) still panic-stubbed. Real-HW init (cache invalidate, BAT setup, clock-gen probe, TB calibration) deferred. |
+| 2 | CPU init + banner on UART1 | Done on QEMU. Exception vectors installed at 0x100..0x1300 with MSR[IP]=0, MSR[ME]=1, MSR[RI]=1. Decrementer (0x900) has a real handler + millisecond tick counter. Syscall (0xC00) has a trampoline + C-stub dispatcher (full save-all / dispatch / restore-all / rfi pipeline; `sc` round-trip test passes). ExtInt (0x500) still panic-stubbed -- deferred to its first consumer. Real-HW init (cache invalidate, BAT setup, clock-gen probe, TB calibration) deferred. |
 | 3 | DRAM init | Done on QEMU (QEMU pre-wires DRAM). Real-HW DDR init sequence (docs/02 §"DDR init sequence" steps 1–12, SPD probe, mode-register programming) is **not implemented**. |
 | 4 | PCI enumeration (Bug 2 fix) | Done. Spec 03 Tests #1 + #2 pass. Full PCI resource pipeline: sizing, BAR assignment with split non-prefetch/prefetch/IO allocators, cmd-register enable, and bridge MEM/PREFETCH/IO-window programming (BASE/LIMIT at 0x20/0x22, 0x24/0x26, 0x1C/0x1D; 1 MiB / 4 KiB granularity; disabled-LIMIT<BASE encoding when a window is unused). 64-bit-above-4 GiB BAR placement not supported (the CPU can't address that region; the firmware writes high-dword=0 for 64-bit BARs). |
 | 5 | VT8231 full init | Partial -- UART1 chain only. IDE, USB, AC'97, PM, SMBus, PIC are not initialised. |
@@ -97,8 +102,9 @@ machdep/pegasos2/
 ├── reset.S              reset-vector trampoline (data/bss/vectors copy, MSR[IP]=0, stack init, call C)
 ├── firmware.ld          linker script (flash @0xFFF00000, dram @0x00100000, vectors @0x00000000)
 ├── phase1.c             Phase-1 C entry: bring up hardware, run tests
-├── exceptions.S         vector stubs at 0x100..0x1300 + common_trap + real 0x900 decrementer handler + _ms_tick_count
+├── exceptions.S         vector stubs at 0x100..0x1300 + common_trap + real 0x900 decrementer + 0xC00->syscall_trampoline + _ms_tick_count + _syscall_frame
 ├── panic.c              panic_dump(): UART1 register dump for unrecoverable exceptions
+├── syscall.c            syscall_dispatch(): 0xC00 C-side stub (prints r3/srr0, returns 0xBABE in r3)
 ├── timer.c/h            get_msecs(), timer_arm(), enable_ei()/disable_ei() MSR[EE] toggles
 ├── pegasos2.h           memory-map constants (flash, MV64361, PCI windows, UART)
 ├── io.h                 inline-asm MMIO accessors (BE + LE variants, byte)
@@ -310,15 +316,25 @@ Pick based on appetite. Each is roughly a single focused commit.
 
 ### Near-term, unblocks later work
 
-**External-interrupt (0x500) dispatch + Syscall (0xC00)
-trampoline.** MSR[ME]/[RI] are set, Decrementer (0x900) runs a
-real handler that feeds `get_msecs()`, but 0x500 and 0xC00 still
-panic. External-interrupt needs MV64361 main/GPP IC init -> VT8231
-PIC init -> registered-handler table + dispatch logic; tested by
-arming one device's IRQ and observing the handler fire. Syscall
-needs the IEEE-1275 client-interface entry point (spec 06) to
-dispatch to -- it's roughly 20 lines of asm but the body is the
-whole client interface, so land both together.
+**External-interrupt (0x500) dispatch.** MSR[ME]/[RI] are set,
+Decrementer (0x900) runs a real handler feeding `get_msecs()`,
+Syscall (0xC00) has a working trampoline + stub dispatcher.
+ExtInt still panics. Lands with its first consumer -- the
+plausible one is OF UART RX for interactive Forth, which would
+want handler registration anyway. MV64361 main/GPP IC register
+survey + VT8231 PIC init + registered-handler table + dispatch
+logic; test by arming the consumer's IRQ and observing the
+handler fire. Spec 02 §"Interrupt controller" / spec 04
+§"VT8231 PIC" have the register maps.
+
+**IEEE-1275 client-interface body (spec 06).** The 0xC00
+trampoline is done. syscall_dispatch() currently returns a
+sentinel 0xBABE. Expanding it to decode the caller's
+call-structure pointer in r3 and route to OF-exposed services
+(getprop / setprop / finddevice / call-method / open / close /
+boot / exit / interpret, ...) is substantial -- several hundred
+LOC of service plumbing that only makes sense once the OF
+device tree exists. Lands with the OF runtime.
 
 **OF Forth runtime bring-up.** The biggest remaining piece.
 `upstream/smartfirmware/bin/of/` ships the Forth interpreter and

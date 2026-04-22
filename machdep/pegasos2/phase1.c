@@ -246,6 +246,31 @@ void phase1_c_main(void)
 		  ticks > 0 ? "  decrementer handler: OK\n"
 			    : "  decrementer handler: FAIL (no ticks)\n");
 
+	/*
+	 * Syscall round-trip. Put a sentinel in r3, issue `sc`, read
+	 * r3 back. The 0xC00 trampoline saves caller state, invokes
+	 * syscall_dispatch which overwrites the saved r3 with 0xBABE,
+	 * and rfi's us to the instruction after `sc`. Observing 0xBABE
+	 * proves the save-dispatch-restore-rfi pipeline works end-to-end
+	 * and that register modifications by the C dispatcher propagate
+	 * back to the caller.
+	 */
+	uart_puts(UART1_BASE, "\nSyscall test:\n");
+	uint32_t sc_result;
+	__asm__ volatile (
+		"li   3, 0x1337\n\t"
+		"sc\n\t"
+		"mr   %0, 3\n\t"
+		: "=r"(sc_result)
+		:
+		: "r3", "lr", "ctr", "xer", "cc", "memory"
+	);
+	uart_puts(UART1_BASE, "  r3 after sc = 0x");
+	uart_put_hex32(UART1_BASE, sc_result);
+	uart_puts(UART1_BASE,
+		  sc_result == 0x0000BABEu ? "  (expected 0xBABE) OK\n"
+					   : "  (expected 0xBABE) FAIL\n");
+
 #ifdef EXCEPTION_TEST
 	/*
 	 * Compile-time-gated exception self-test. Builds with

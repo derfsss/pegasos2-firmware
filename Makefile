@@ -51,6 +51,7 @@ OBJS := \
     $(BUILD)/reset.o \
     $(BUILD)/exceptions.o \
     $(BUILD)/panic.o \
+    $(BUILD)/syscall.o \
     $(BUILD)/timer.o \
     $(BUILD)/phase1.o \
     $(BUILD)/uart16550.o \

@@ -93,7 +93,18 @@
 	mfspr   r3, 272
 	rfi
 
-	VECTOR_STUB 0xC00
+	/*
+	 * Syscall (0xC00): IEEE-1275 client-interface entry. `sc`
+	 * triggers this vector with SRR0 = address of the instruction
+	 * after `sc` and SRR1 = MSR at the time of the call. The
+	 * trampoline is larger than 256 bytes (it saves all 32 GPRs
+	 * plus SPRs to a frame), so this slot just branches to the
+	 * body out-of-line. 24-bit PPC branch reaches ±32 MiB; the
+	 * body lives a few hundred bytes later in .vectors.
+	 */
+	. = 0xC00
+	b       syscall_trampoline
+
 	VECTOR_STUB 0xD00
 	VECTOR_STUB 0x1300
 
@@ -209,6 +220,152 @@ common_trap:
 	.size common_trap, . - common_trap
 
 /*
+ * Syscall trampoline. Reached from the 0xC00 vector via a 24-bit
+ * relative branch. Responsibilities:
+ *
+ *   1. Save caller's full register state to _syscall_frame in .bss.
+ *      Layout matches struct sc_frame in syscall.c:
+ *          0   gpr[0..31]   (32 words, r0 at 0, r31 at 124)
+ *        128   lr
+ *        132   ctr
+ *        136   xer
+ *        140   cr
+ *        144   srr0          (= PC after the `sc` instruction)
+ *        148   srr1          (= MSR at time of `sc`)
+ *
+ *   2. Call syscall_dispatch(&frame) in C. The caller's r1 is still
+ *      valid (real mode, no translation flip needed) and the
+ *      dispatcher can use it for its own stack frame.
+ *
+ *   3. Reload all state from the (possibly modified) frame. The
+ *      dispatcher may have written return values into gpr[3]..[4]
+ *      or advanced SRR0 to skip over a helper sequence.
+ *
+ *   4. rfi. Hardware restores PC from SRR0 and MSR from SRR1.
+ *
+ * SPRG0/SPRG1 are used as scratch (same as common_trap). This is
+ * safe because exceptions can't nest during a syscall: MSR[EE] is
+ * cleared by hardware on exception entry and we don't re-enable
+ * it here. A panic from inside syscall_dispatch would still use
+ * SPRG0/1 -- correct, the syscall state is being abandoned anyway.
+ */
+	.globl syscall_trampoline
+	.type  syscall_trampoline, @function
+syscall_trampoline:
+	mtspr   272, r3                  /* SPRG0 = r3 */
+	mtspr   273, r4                  /* SPRG1 = r4 */
+
+	lis     r4, _syscall_frame@ha
+	addi    r4, r4, _syscall_frame@l
+
+	stw     r0,  0(r4)
+	stw     r1,  4(r4)
+	stw     r2,  8(r4)
+	mfspr   r3, 272                  /* saved r3 */
+	stw     r3, 12(r4)
+	mfspr   r3, 273                  /* saved r4 */
+	stw     r3, 16(r4)
+	stw     r5,  20(r4)
+	stw     r6,  24(r4)
+	stw     r7,  28(r4)
+	stw     r8,  32(r4)
+	stw     r9,  36(r4)
+	stw     r10, 40(r4)
+	stw     r11, 44(r4)
+	stw     r12, 48(r4)
+	stw     r13, 52(r4)
+	stw     r14, 56(r4)
+	stw     r15, 60(r4)
+	stw     r16, 64(r4)
+	stw     r17, 68(r4)
+	stw     r18, 72(r4)
+	stw     r19, 76(r4)
+	stw     r20, 80(r4)
+	stw     r21, 84(r4)
+	stw     r22, 88(r4)
+	stw     r23, 92(r4)
+	stw     r24, 96(r4)
+	stw     r25, 100(r4)
+	stw     r26, 104(r4)
+	stw     r27, 108(r4)
+	stw     r28, 112(r4)
+	stw     r29, 116(r4)
+	stw     r30, 120(r4)
+	stw     r31, 124(r4)
+
+	mflr    r3
+	stw     r3, 128(r4)
+	mfctr   r3
+	stw     r3, 132(r4)
+	mfxer   r3
+	stw     r3, 136(r4)
+	mfcr    r3
+	stw     r3, 140(r4)
+	mfspr   r3, 26                   /* SRR0 */
+	stw     r3, 144(r4)
+	mfspr   r3, 27                   /* SRR1 */
+	stw     r3, 148(r4)
+
+	mr      r3, r4                   /* r3 = &frame */
+	bl      syscall_dispatch
+
+	/* Reload state from frame. Walk SPRs first so r3/r4 are not
+	 * yet their final values while we still need them as scratch. */
+	lis     r4, _syscall_frame@ha
+	addi    r4, r4, _syscall_frame@l
+
+	lwz     r3, 144(r4)
+	mtspr   26, r3                   /* SRR0 */
+	lwz     r3, 148(r4)
+	mtspr   27, r3                   /* SRR1 */
+	lwz     r3, 140(r4)
+	mtcr    r3
+	lwz     r3, 136(r4)
+	mtxer   r3
+	lwz     r3, 132(r4)
+	mtctr   r3
+	lwz     r3, 128(r4)
+	mtlr    r3
+
+	lwz     r31, 124(r4)
+	lwz     r30, 120(r4)
+	lwz     r29, 116(r4)
+	lwz     r28, 112(r4)
+	lwz     r27, 108(r4)
+	lwz     r26, 104(r4)
+	lwz     r25, 100(r4)
+	lwz     r24, 96(r4)
+	lwz     r23, 92(r4)
+	lwz     r22, 88(r4)
+	lwz     r21, 84(r4)
+	lwz     r20, 80(r4)
+	lwz     r19, 76(r4)
+	lwz     r18, 72(r4)
+	lwz     r17, 68(r4)
+	lwz     r16, 64(r4)
+	lwz     r15, 60(r4)
+	lwz     r14, 56(r4)
+	lwz     r13, 52(r4)
+	lwz     r12, 48(r4)
+	lwz     r11, 44(r4)
+	lwz     r10, 40(r4)
+	lwz     r9,  36(r4)
+	lwz     r8,  32(r4)
+	lwz     r7,  28(r4)
+	lwz     r6,  24(r4)
+	lwz     r5,  20(r4)
+	lwz     r0,  0(r4)
+	lwz     r1,  4(r4)
+	lwz     r2,  8(r4)
+	/* r3 and r4 last -- they were our frame-pointer scratch. */
+	lwz     r3, 12(r4)               /* frame[r3] -> r3 */
+	lwz     r4, 16(r4)               /* frame[r4] -> r4 (via old r4) */
+
+	rfi
+
+	.size syscall_trampoline, . - syscall_trampoline
+
+/*
  * .bss allocations for the panic frame and the panic stack.
  * Declared here (rather than panic.c) so the asm side has stable
  * linker-visible symbols for `lis/addi`.
@@ -237,6 +394,16 @@ _panic_stack_top:
 	.globl   _ms_tick_count
 _ms_tick_count:
 	.skip    4
+
+	/*
+	 * Syscall frame used by syscall_trampoline and read by
+	 * syscall_dispatch (struct sc_frame). 152 bytes live, rounded
+	 * to 256 for slack if the C struct grows.
+	 */
+	.align   4
+	.globl   _syscall_frame
+_syscall_frame:
+	.skip    256
 
 	/* Silence a linker GNU-stack note for this asm file. */
 	.section .note.GNU-stack, "", @progbits
