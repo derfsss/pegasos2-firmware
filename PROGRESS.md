@@ -17,7 +17,7 @@ client interface) are NOT started.
 
 A successful boot of `build/firmware-raw.bin` on
 `qemu-system-ppc -M pegasos2 -m 512 -bios ... -serial ... -display none`
-produces **1,940 bytes** of serial output containing, in order:
+produces **2,073 bytes** of serial output containing, in order:
 
 1. Banner with PVR (0x80020102 = MPC7447A) and DRAM round-trip OK.
 2. Console address and stack pointer.
@@ -35,10 +35,13 @@ produces **1,940 bytes** of serial output containing, in order:
    phase1 reads that address back from config space rather than
    hard-coding one. Returns to our HLT trampoline at
    CS:IP=0x0050:0001.
-7. Decrementer self-test: MSR[EE] enabled briefly, busy-spin,
-   MSR[EE] disabled, accumulated tick count reported (non-zero
-   delta proves 0x900 handler runs and rfi's back). MSR[ME] and
-   MSR[RI] are also set at reset time.
+7. Clock calibration + decrementer self-test. `timer_calibrate()`
+   seeds `_dec_reload` from Pegasos II board defaults
+   (FSB=133 MHz → TB=33.25 MHz → 33250 ticks/ms) and the 0x900
+   handler loads its reload value from that word. Then MSR[EE]
+   enabled briefly, busy-spin, MSR[EE] disabled, tick count
+   reported (non-zero delta proves the handler runs and rfi's
+   back). MSR[ME] and MSR[RI] are set at reset time.
 8. Syscall round-trip: `li r3, 0x1337; sc; mr X, r3` + print.
    0xC00 trampoline saves all 32 GPRs + SPRs, the C stub
    syscall_dispatch() overwrites frame.gpr[3]=0xBABE, trampoline
@@ -59,7 +62,8 @@ enabled in the default build.
 ## Commit history (as of this writing)
 
 ```
-(new)    Syscall (0xC00) trampoline + stub dispatcher
+(new)    Decrementer reload calibrated; _dec_reload runtime-configurable
+ffaaf7c  Syscall (0xC00) trampoline + stub dispatcher
 80fd426  PCI walker: prefetchable-memory routing + bridge pref window
 23a5632  Decrementer handler + MSR[ME]/[RI]; ms-tick API
 cda478f  PCI walker: bridge MEM/IO window programming
@@ -262,20 +266,19 @@ maps it at `0xFFF00000..0xFFF7FFFF`. We build for QEMU's layout.
 A real-HW-ready build would need to either relocate to 0xFFF80000
 or ship two copies for aliasing -- this is a known open item.
 
-### 11. `DEC_TICKS_PER_MS` is duplicated in asm and C
+### 11. `_dec_reload` must be non-zero before MSR[EE] is set
 
-The decrementer re-arm value (25000) is hardcoded both in
-`exceptions.S` (the 0x900 handler's `li r4, 25000`) and in
-`timer.h` (the `DEC_TICKS_PER_MS` macro). Nothing enforces
-these stay in sync; if one is changed without the other, the
-tick rate and the macro disagree, which only matters when the
-macro is used for a duration calculation. The asm side can't
-easily include timer.h (it pulls in C declarations GAS
-doesn't understand), so either leave the duplication with a
-cross-reference comment (current choice) or promote the
-constant to a `.set` directive that both sides share via a
-preprocessor pass. If the value is ever recalibrated on real
-HW per spec 01 §"Clock detection", update both sites.
+The 0x900 handler reads its reload value from `_dec_reload`
+(a `.bss` word). `.bss` is zero-initialised, so if MSR[EE] is
+enabled before `timer_calibrate()` has written a non-zero
+value, the handler writes 0 to SPR 22 and the decrementer
+fires again immediately, looping forever (no forward progress
+on the interrupted code). `phase1_c_main()` orders
+`timer_calibrate()` before `enable_ei()`; any future code that
+enables interrupts must preserve that order. Previously this
+gotcha was "value duplicated between asm and C" -- the runtime
+word eliminates the duplication but introduces this
+initialisation-order requirement instead.
 
 ### 12. Exception-vector install timing
 
@@ -315,6 +318,15 @@ offset constants and `machdep/pegasos2/vt8231.c` bit choices.
 Pick based on appetite. Each is roughly a single focused commit.
 
 ### Near-term, unblocks later work
+
+**W83194 SMBus probe to replace the assumed 133 MHz FSB.**
+Today `timer_calibrate()` hardcodes the Pegasos II board
+default (FSB=133 MHz). Real HW may be wired for 166 MHz on
+later boards. Spec 01 §"Clock detection" gates the probe on a
+functional SMBus driver (VT8231 fn 4, address 0x69). Once that
+lands, `timer_calibrate()` calls the probe first and falls back
+to the default on failure. Does not affect QEMU (the emulated
+TB is independent of our probe result there).
 
 **External-interrupt (0x500) dispatch.** MSR[ME]/[RI] are set,
 Decrementer (0x900) runs a real handler feeding `get_msecs()`,

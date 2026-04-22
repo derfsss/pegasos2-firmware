@@ -77,7 +77,9 @@
 	 *
 	 * Body:
 	 *   ++_ms_tick_count
-	 *   DEC <- DEC_TICKS_PER_MS  (25000; see timer.h for rationale)
+	 *   DEC <- _dec_reload       (written by timer_calibrate(), zero
+	 *                             at power-on -- caller must calibrate
+	 *                             before enabling MSR[EE])
 	 *   rfi
 	 */
 	. = 0x900
@@ -87,7 +89,8 @@
 	lwz     r4, _ms_tick_count@l(r3)
 	addi    r4, r4, 1
 	stw     r4, _ms_tick_count@l(r3)
-	li      r4, 25000            /* DEC_TICKS_PER_MS */
+	lis     r3, _dec_reload@ha
+	lwz     r4, _dec_reload@l(r3)
 	mtspr   22, r4               /* SPR 22 = DEC; re-arm */
 	mfspr   r4, 273
 	mfspr   r3, 272
@@ -393,6 +396,19 @@ _panic_stack_top:
 	.align   4
 	.globl   _ms_tick_count
 _ms_tick_count:
+	.skip    4
+
+	/*
+	 * Decrementer reload value. Loaded by the 0x900 handler each
+	 * time the decrementer underflows. Must be non-zero before
+	 * MSR[EE] is enabled -- otherwise the handler writes 0 to DEC
+	 * and the counter fires again immediately, looping forever.
+	 * timer_calibrate() in timer.c seeds this from the detected /
+	 * assumed TB frequency.
+	 */
+	.align   4
+	.globl   _dec_reload
+_dec_reload:
 	.skip    4
 
 	/*

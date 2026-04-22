@@ -219,7 +219,24 @@ void phase1_c_main(void)
 	}
 
 	/*
-	 * Decrementer self-test. Arm SPR 22 with DEC_TICKS_PER_MS,
+	 * Seed _dec_reload from Pegasos II board defaults before any
+	 * interrupt can fire. Real-HW path will replace this with a
+	 * W83194 SMBus probe; on QEMU the value is not wall-clock
+	 * accurate but the 0x900 handler still re-arms with it and
+	 * the tick counter advances monotonically.
+	 */
+	uart_puts(UART1_BASE, "\nClock calibration (Pegasos II defaults, W83194 probe TBD):\n");
+	timer_calibrate();
+	uart_puts(UART1_BASE, "  FSB = ");
+	uart_put_hex32(UART1_BASE, timer_fsb_hz());
+	uart_puts(UART1_BASE, " Hz  TB = ");
+	uart_put_hex32(UART1_BASE, timer_tb_hz());
+	uart_puts(UART1_BASE, " Hz  DEC reload = ");
+	uart_put_hex32(UART1_BASE, timer_ms_reload());
+	uart_puts(UART1_BASE, " ticks/ms\n");
+
+	/*
+	 * Decrementer self-test. Arm SPR 22 with one reload's worth,
 	 * enable MSR[EE] briefly, busy-spin long enough for several
 	 * fires, disable MSR[EE] again, and report the accumulated
 	 * tick count. A non-zero delta proves the 0x900 vector runs
@@ -232,7 +249,7 @@ void phase1_c_main(void)
 	uart_put_hex32(UART1_BASE, get_msecs());
 	uart_puts(UART1_BASE, "\n");
 
-	timer_arm(DEC_TICKS_PER_MS);
+	timer_arm(timer_ms_reload());
 	enable_ei();
 	for (volatile uint32_t i = 0; i < 1000000u; i++)
 		;

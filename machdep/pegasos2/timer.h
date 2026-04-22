@@ -20,20 +20,35 @@
 #include <stdint.h>
 
 /*
- * Decrementer reload value. SPR 22 decrements at the time-base
- * frequency = bus_clock / 4. On QEMU's pegasos2 the TB runs somewhere
- * in the 25-100 MHz range depending on version; 25000 ticks gives
- * roughly a 1 ms period at a 25 MHz TB and ~0.25 ms at 100 MHz.
- * Either is fine for the Phase-1 self-test -- a real-HW build will
- * calibrate this from the W83194 / HID1[PLL_CFG] readout per
- * docs/01-cpu-init.md §"Clock detection".
+ * Pegasos II board-standard clock rates. Used by timer_calibrate()
+ * as the reset-time assumption when no probe has run. The real-HW
+ * path for detecting an overridden FSB is a W83194 SMBus probe,
+ * per docs/01-cpu-init.md §"Clock detection"; that probe is TBD
+ * and will overwrite these via timer_set_fsb().
  *
- * The same literal is hardcoded in exceptions.S's 0x900 handler.
+ * On MPC7447A the time-base counter increments at bus_clock / 4,
+ * a fixed ratio (no HID0 / L2CR configuration to check).
  */
-#define DEC_TICKS_PER_MS    25000u
+#define PEGASOS2_FSB_HZ_DEFAULT   133000000u        /* 133 MHz board default  */
+#define PEGASOS2_TB_HZ_DEFAULT    (PEGASOS2_FSB_HZ_DEFAULT / 4u)
+#define PEGASOS2_DEC_TICKS_PER_MS (PEGASOS2_TB_HZ_DEFAULT / 1000u)
+
+/*
+ * Seed the decrementer reload value from the assumed clock rates.
+ * Must be called at least once BEFORE MSR[EE] is enabled; otherwise
+ * the 0x900 handler reads _dec_reload == 0 from zero-initialised
+ * .bss and loops forever.
+ */
+void timer_calibrate(void);
+
+/* Read-back accessors for the calibration state (diagnostic). */
+uint32_t timer_fsb_hz(void);
+uint32_t timer_tb_hz(void);
+uint32_t timer_ms_reload(void);
 
 /* Arm the decrementer (SPR 22) with `ticks`. It begins counting down
- * immediately; the handler at 0x900 re-arms itself after each fire. */
+ * immediately; the handler at 0x900 re-arms itself after each fire
+ * using the calibrated reload value. */
 void timer_arm(uint32_t ticks);
 
 /* Read the tick counter that the decrementer handler increments. */
