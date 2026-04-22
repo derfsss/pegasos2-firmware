@@ -107,17 +107,37 @@ failsafe_write(Byte *buf, Int len)
 }
 
 /*
- * Read from UART1. We don't have a UART RX path yet (polled RX via
- * LSR[DR] is trivial but not wired; and an interrupt-driven RX needs
- * the ExtInt dispatcher which is deferred per PROGRESS.md). Return
- * zero-bytes-available so callers that want input exit cleanly.
+ * Read up to `len` bytes from UART1 via the polled RX helper.
+ *
+ * SmartFirmware's interpret() blocks on input by design -- typed
+ * characters must reach the read-eval loop or the `ok` prompt idles
+ * forever. We satisfy that by spinning on uart_poll_rx() for the
+ * first byte, then opportunistically draining any additional
+ * characters the FIFO already has (so a long pasted line arrives
+ * atomically rather than one getc-poll per byte). We never block
+ * after the first byte, so a slow typist sees responsive echo.
+ *
+ * QEMU's -serial mon:stdio will deliver key presses to this path.
+ * On real HW an interrupt-driven RX is ultimately preferable (frees
+ * the CPU), but polled is fine for an interactive Forth REPL.
  */
 Int
 failsafe_read(Byte *buf, Int len)
 {
-	(void)buf;
-	(void)len;
-	return 0;
+	Int n = 0;
+	int c;
+
+	if (len <= 0 || buf == NULL)
+		return 0;
+
+	/* Block until the first character arrives. */
+	buf[n++] = uart_getc(UART1_BASE);
+
+	/* Drain anything else already in the FIFO without blocking. */
+	while (n < len && (c = uart_poll_rx(UART1_BASE)) >= 0)
+		buf[n++] = (Byte)c;
+
+	return n;
 }
 
 /* --------------------------------------------------------------- *

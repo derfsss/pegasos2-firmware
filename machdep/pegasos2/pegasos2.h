@@ -69,6 +69,7 @@
 #define UART16550_MSR      0x6                /* modem status */
 
 /* LSR bits. */
+#define UART16550_LSR_DR   0x01               /* data ready (RX) */
 #define UART16550_LSR_THRE 0x20               /* transmit holding empty */
 #define UART16550_LSR_TEMT 0x40               /* transmitter empty */
 

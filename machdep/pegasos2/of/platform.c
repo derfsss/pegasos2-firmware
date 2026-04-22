@@ -35,8 +35,17 @@ struct nvram_data {
 struct nvram_data g_nvram[] = {
 	{ "real-mode?",           "false"     },
 	{ "security-mode",        "none"      },
-	{ "input-device",         "serial"    },
-	{ "output-device",        "serial"    },
+	/*
+	 * Point at /failsafe (created by install_failsafe with
+	 * device_type="serial") rather than a /serial path we would
+	 * otherwise have to define ourselves.  install-console runs
+	 * `output-device output input-device input` which opens the
+	 * path as a device-tree node; /failsafe's open/close/read/
+	 * write methods route through our failsafe_write (uart_putc)
+	 * and failsafe_read (polled uart_getc).
+	 */
+	{ "input-device",         "/failsafe" },
+	{ "output-device",        "/failsafe" },
 	{ "auto-boot?",           "false"     },  /* no boot path yet */
 	{ "use-nvramrc?",         "false"     },
 	{ NULL, NULL }                              /* terminator */

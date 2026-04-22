@@ -19,4 +19,11 @@ void uart_put_hex8 (uint32_t base, uint8_t  v);
 void uart_put_hex16(uint32_t base, uint16_t v);
 void uart_put_hex32(uint32_t base, uint32_t v);
 
+/* Non-blocking polled RX. Returns the byte in [0..255] if one is
+ * available, or -1 if the UART has no data pending. */
+int  uart_poll_rx(uint32_t base);
+
+/* Blocking polled RX. Spins until one byte is available, returns it. */
+uint8_t uart_getc(uint32_t base);
+
 #endif

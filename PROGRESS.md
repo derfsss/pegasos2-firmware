@@ -6,15 +6,16 @@ Read it after `CLAUDE.md` and `docs/START-HERE.md`.
 ## One-line status (2026-04-22)
 
 OF Forth runtime bring-up is in progress as a multi-commit
-series. Commits 1..4 of N are done: machdep.h scaffold, machdep.c
+series. Commits 1..5 of N are done: machdep.h scaffold, machdep.c
 stubs + of-test partial-link target, full SF subset + platform
-glue, and now **OF actually runs from firmware.bin and reaches an
-`ok` prompt on UART1 via the failsafe output path**. Default boot
-emits ~71 KiB of mixed DPRINTF + Forth banner + `ok` prompt and
-then waits for keyboard input. Commit 5 will add a `/serial` node
-with polled UART RX so install-console finds a proper console
-and `interpret()` can actually process input. See the "OF bring-up
-sequence" section below.
+glue, OF reaching an `ok` prompt via failsafe, and now
+**interactive Forth REPL on serial -- typing `42 .` echoes `42 ok`**.
+install-console succeeds via `/failsafe` (SF's device_type=serial
+package), failsafe_read is backed by a polled UART1 RX, and the
+banner pagination can be advanced with `f`. Commit 6+ will
+disable DPRINTF (DEBUG flag), tidy diagnostic prints, and
+retire the phase1 hand-off banner once the transition is
+boring.
 
 Phase 1 is substantively complete on QEMU. Both headline bugs
 (spec 09 Bug 1 and Bug 2) are implemented and pass their spec-
@@ -73,7 +74,8 @@ enabled in the default build.
 ## Commit history (as of this writing)
 
 ```
-(new)    OF bring-up 4/N: OF runs from firmware.bin; reaches `ok` via failsafe
+(new)    OF bring-up 5/N: interactive Forth REPL on serial via /failsafe
+f23d7ec  OF bring-up 4/N: OF runs from firmware.bin; reaches `ok` via failsafe
 1d9c910  OF bring-up 3/N: full SF subset + platform glue; of-test closes
 e208c6c  OF bring-up 2/N: machdep.c stubs + of-test partial-link target
 a0f0c6f  OF bring-up 1/N: SF machdep.h scaffold + 3-file subset compiles
@@ -366,8 +368,8 @@ with OF behaviour until Commit 6+.
 | 2 | Malloc pick + machdep stubs for the ~22 machine_* / failsafe_* / isa_* / do_* functions | `make of-test` partial-links SF subset + machdep.o; remaining undefineds are just our existing uart/_ms_tick_count (satisfied at commit 6 when we link into firmware.bin) |
 | 3 | Grow the SF subset (forth/funcs/exec/table/admin/control/cmdio/display/device/chosen/memory/root/cpu-ppc/packages/debug/nvedit/nvram + platform glue for init_list / install_list / g_nvram / machine_font / ppc_get_version) | `of-test` links with zero SF-side undefineds (only _ms_tick_count + uart_* remain, resolved at firmware link) |
 | 4 | Call into OF main() from phase1_c_main() | ✅ DONE -- default boot emits full SF banner + `ok` prompt via failsafe output; install-console errors due to missing /serial node; interpret() reads 0 bytes from failsafe_read and idles |
-| 5 | /serial node + failsafe_read via polled UART RX | install-console picks /serial; typed input reaches interpret(); `42 .` echoes `42 ok` |
-| 6..N | Fix observed failures, tidy diagnostic prints, remove trace hooks, disable DPRINTF | DEBUG off by default; `ok` prompt appears without the interleaved trace |
+| 5 | failsafe_read polled UART RX + NVRAM input/output-device=/failsafe | ✅ DONE -- install-console opens /failsafe (device_type=serial, SF-provided); `42 .` piped via `-serial mon:stdio` echoes `42 ok` after clearing the pager prompt with `f` |
+| 6..N | Disable DPRINTF (DEBUG off by default), tidy diagnostic prints, consider disabling pagination, retire the phase1 hand-off separator once the transition is reliable | Clean `ok` prompt appears without the interleaved trace lines or banner pager stalling input |
 | Final | Enter the interpret() read-eval loop | `ok` prompt appears on UART1; simple Forth like `42 .` echoes |
 
 Decisions taken during the planning pass:

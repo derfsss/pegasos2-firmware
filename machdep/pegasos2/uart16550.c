@@ -54,3 +54,19 @@ static void put_hex_n(uint32_t base, uint32_t v, int nibbles)
 void uart_put_hex8 (uint32_t base, uint8_t  v) { put_hex_n(base, v, 2); }
 void uart_put_hex16(uint32_t base, uint16_t v) { put_hex_n(base, v, 4); }
 void uart_put_hex32(uint32_t base, uint32_t v) { put_hex_n(base, v, 8); }
+
+int uart_poll_rx(uint32_t base)
+{
+	if ((mmio_read8(base + UART16550_LSR) & UART16550_LSR_DR) == 0)
+		return -1;
+	return mmio_read8(base + UART16550_RBR);
+}
+
+uint8_t uart_getc(uint32_t base)
+{
+	int c;
+	do {
+		c = uart_poll_rx(base);
+	} while (c < 0);
+	return (uint8_t)c;
+}
