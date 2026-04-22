@@ -21,9 +21,11 @@ CC      := $(PREFIX)gcc
 OBJCOPY := $(PREFIX)objcopy
 OBJDUMP := $(PREFIX)objdump
 
-BUILD    := build
-MACHDEP  := machdep/pegasos2
-X86EMU   := upstream/x86emu
+BUILD       := build
+MACHDEP     := machdep/pegasos2
+X86EMU      := upstream/x86emu
+SF          := upstream/smartfirmware/bin/of
+SF_MACHDEP  := $(MACHDEP)/of
 
 # Bare-metal flags. No Linux runtime, no built-ins, big-endian
 # 32-bit PowerPC targeting the 7447/7450 family.
@@ -71,7 +73,7 @@ FIRMWARE := $(BUILD)/firmware-raw.bin
 ELF      := $(BUILD)/firmware.elf
 FLASH_SIZE := 524288
 
-.PHONY: all clean info disasm
+.PHONY: all clean info disasm of-sf-subset
 .SUFFIXES:
 
 all: $(FIRMWARE)
@@ -95,6 +97,61 @@ X86EMU_WARNS := \
     -D__KERNEL__ -U_FORTIFY_SOURCE
 $(BUILD)/x86emu_%.o: $(X86EMU)/x86emu/%.c | $(BUILD)
 	$(CC) $(CFLAGS) $(X86EMU_WARNS) -c $< -o $@
+
+# -----------------------------------------------------------------
+# Vendored SmartFirmware OF runtime (CodeGen source license; see
+# LICENSES/CodeGen-smartfirmware.txt and upstream/smartfirmware/
+# COPYRIGHT). This is Commit 1 of the OF bring-up: compile a tiny
+# subset of SF's portable core against a freshly-authored Pegasos2
+# machdep.h to prove the header setup is sound. Nothing here is
+# linked into firmware.bin yet -- `make of-sf-subset` builds only
+# the object files and the default `make` ignores them.
+#
+# Build-option posture:
+#   -I $(SF_MACHDEP) first so machdep.h resolves to our Pegasos2
+#     version rather than any upstream stub.
+#   -I $(SF) so SF's internal stdlib.h / ctype.h / string.h / defs.h
+#     are found before any system header of the same name would be.
+#   -DDEBUG so the DPRINTF() macro expands to real UART prints during
+#     bring-up. Will be disabled once the ok prompt is reliable.
+#   -D_FORTIFY_SOURCE=0 defensively; we're freestanding and have no
+#     libc-side __printf_chk / __fortify_fail to satisfy.
+# Do NOT define:
+#   STANDALONE (would pull in <stdio.h> and a hosted runtime)
+#   MAIN       (would pull in <stdio.h> inside alloc.c)
+#   LITTLE_ENDIAN, SF_64BIT (neither applies to 32-bit big-endian PPC)
+SF_CFLAGS := \
+    -m32 -mbig-endian -mcpu=7450 \
+    -msoft-float -mno-altivec \
+    -ffreestanding -fno-builtin \
+    -fno-pic -fno-stack-protector \
+    -fno-asynchronous-unwind-tables \
+    -O2 -g -std=gnu11 \
+    -Wall \
+    -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function \
+    -Wno-sign-compare -Wno-missing-field-initializers \
+    -Wno-unused-but-set-variable -Wno-parentheses \
+    -Wno-implicit-fallthrough -Wno-char-subscripts \
+    -Wno-pointer-sign -Wno-maybe-uninitialized \
+    -I$(SF_MACHDEP) \
+    -I$(SF) \
+    -DDEBUG \
+    -U_FORTIFY_SOURCE
+
+$(BUILD)/of_%.o: $(SF)/%.c | $(BUILD)
+	$(CC) $(SF_CFLAGS) -c $< -o $@
+
+# Commit-1 SF subset: minimal dependency cone of three files that
+# don't transitively require machine_* functions. Building this is
+# the acceptance criterion for the commit.
+OF_SUBSET := \
+    $(BUILD)/of_errs.o \
+    $(BUILD)/of_stdlib.o \
+    $(BUILD)/of_alloc.o
+
+.PHONY: of-sf-subset
+of-sf-subset: $(OF_SUBSET)
+	@echo "  OF    subset compiled: $(words $(OF_SUBSET)) object(s)"
 
 $(ELF): $(OBJS) $(MACHDEP)/firmware.ld | $(BUILD)
 	$(CC) $(LDFLAGS) $(OBJS) -o $@

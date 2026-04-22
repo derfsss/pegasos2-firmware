@@ -5,6 +5,12 @@ Read it after `CLAUDE.md` and `docs/START-HERE.md`.
 
 ## One-line status (2026-04-22)
 
+OF Forth runtime bring-up is in progress as a multi-commit
+series. Commit 1 (scaffold) compiles a minimal slice of the
+vendored SmartFirmware core against a fresh Pegasos2 machdep.h;
+nothing is linked into `firmware-raw.bin` yet. See the
+"OF bring-up sequence" section below.
+
 Phase 1 is substantively complete on QEMU. Both headline bugs
 (spec 09 Bug 1 and Bug 2) are implemented and pass their spec-
 defined tests. Exception vectors + panic handler now installed
@@ -62,7 +68,8 @@ enabled in the default build.
 ## Commit history (as of this writing)
 
 ```
-(new)    Decrementer reload calibrated; _dec_reload runtime-configurable
+(new)    OF bring-up 1/N: SF machdep.h scaffold + 3-file subset compiles
+19bd9a7  Decrementer reload calibrated; _dec_reload runtime-configurable
 ffaaf7c  Syscall (0xC00) trampoline + stub dispatcher
 80fd426  PCI walker: prefetchable-memory routing + bridge pref window
 23a5632  Decrementer handler + MSR[ME]/[RI]; ms-tick API
@@ -110,6 +117,8 @@ machdep/pegasos2/
 ├── panic.c              panic_dump(): UART1 register dump for unrecoverable exceptions
 ├── syscall.c            syscall_dispatch(): 0xC00 C-side stub (prints r3/srr0, returns 0xBABE in r3)
 ├── timer.c/h            get_msecs(), timer_arm(), enable_ei()/disable_ei() MSR[EE] toggles
+├── of/                  SmartFirmware OF machdep (commit 1: machdep.h only)
+│   └── machdep.h        types, constants, banner strings for upstream/smartfirmware/bin/of
 ├── pegasos2.h           memory-map constants (flash, MV64361, PCI windows, UART)
 ├── io.h                 inline-asm MMIO accessors (BE + LE variants, byte)
 ├── uart16550.c/h        polled 16550 driver
@@ -313,9 +322,45 @@ impl agent worked around by matching QEMU rather than spec:
 When the maintainer responds, reconcile `machdep/pegasos2/mv64361.h`
 offset constants and `machdep/pegasos2/vt8231.c` bit choices.
 
-## Suggested next milestones
+## OF bring-up sequence (in progress, multi-commit)
 
-Pick based on appetite. Each is roughly a single focused commit.
+Maintainer-approved plan to get SmartFirmware's OF runtime
+reaching an `ok` prompt on UART1.  Each commit below is
+individually buildable and keeps the three-test matrix
+(default / bridge / EXCEPTION_TEST) green for phase1.  "Done"
+per-commit is narrower than "useful" -- don't expect a boot
+with OF behaviour until Commit 6+.
+
+| # | Title | Exit criterion |
+|---|-------|----------------|
+| 1 | Scaffold: machdep.h + 3-file SF subset compiles | `make of-sf-subset` builds build/of_{errs,stdlib,alloc}.o; `make` produces identical firmware.bin |
+| 2 | Malloc pick + machdep stubs for the ~22 machine_* / failsafe_* / isa_* / do_* functions | SF links against an `of-test` target with no undefined symbols |
+| 3 | Grow the SF subset (forth/funcs/exec/table/admin/control/cmdio/display/device/chosen/memory/root/cpu/cpu-ppc/packages/debug/nvedit/nvram + whatever else the link needs) | `of-test` still links; source tree now has the full "minimum viable ok" subset |
+| 4 | Call into OF main() from phase1_c_main() | Boot prints SmartFirmware banner or `DPRINTF` output from machine_initialize(); halts somewhere observable |
+| 5..N | Fix observed failures one at a time (device-tree populate, console install, etc.) | Each commit snapshot adds one step's worth of serial output |
+| Final | Enter the interpret() read-eval loop | `ok` prompt appears on UART1; simple Forth like `42 .` echoes |
+
+Decisions taken during the planning pass:
+- OF machdep lives at `machdep/pegasos2/of/`, not inside the
+  vendored `upstream/` tree.  Keeps the clean-room audit trail
+  honest: upstream is the verbatim import; our Pegasos2
+  machdep is our own work.
+- Expand the QEMU flash temporarily if Commit 3 busts 512 KiB.
+  Compression (spec 00's DONA scheme or SF's zrun) is a
+  separate follow-up, not a blocker.
+- Keep the existing exception vectors (panic / decrementer /
+  syscall stub).  The pegasos2 machdep's machine_initialize()
+  does **not** `memcpy` SF's handlers over them (unlike bebox).
+  machine_probe_read/write instead drive our panic path via a
+  "probe active" flag that the DSI handler checks before
+  dumping, advancing SRR0 and rfi'ing on match.
+- `DPRINTF` (via `#define DEBUG` in SF_CFLAGS) stays on during
+  bring-up.  Disable after the `ok` prompt is reliable.
+
+## Other near-term milestones (orthogonal to OF bring-up)
+
+Each is roughly a single focused commit and can run in parallel
+with the OF work above if useful.
 
 ### Near-term, unblocks later work
 
