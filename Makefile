@@ -49,6 +49,8 @@ LDFLAGS := \
 
 OBJS := \
     $(BUILD)/reset.o \
+    $(BUILD)/exceptions.o \
+    $(BUILD)/panic.o \
     $(BUILD)/phase1.o \
     $(BUILD)/uart16550.o \
     $(BUILD)/mv64361.o \

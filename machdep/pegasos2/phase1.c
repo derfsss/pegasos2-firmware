@@ -71,6 +71,13 @@ void phase1_c_main(void)
 	uart_put_hex32(UART1_BASE, sp);
 	uart_puts(UART1_BASE, " (DRAM)\n");
 
+	/*
+	 * By the time we get here, reset.S has already copied the
+	 * exception vectors to 0x00000000 and cleared MSR[IP]. Any
+	 * fault from now on lands in panic_dump.
+	 */
+	uart_puts(UART1_BASE, "Exceptions = installed at 0x00000100..0x00001300, MSR[IP]=0\n");
+
 	uart_puts(UART1_BASE, "\nPCI enumeration:\n");
 	pci_walk();
 
@@ -201,6 +208,19 @@ void phase1_c_main(void)
 		uart_put_hex16(UART1_BASE, M.x86.R_IP);
 		uart_puts(UART1_BASE, "\n");
 	}
+
+#ifdef EXCEPTION_TEST
+	/*
+	 * Compile-time-gated exception self-test. Builds with
+	 * -DEXCEPTION_TEST=1 trigger a deliberate trap via
+	 * `twi 31, r0, 0` (unconditional trap) to verify the
+	 * Program-exception (0x700) path reaches panic_dump. Not enabled
+	 * in the default build -- the default build must halt cleanly.
+	 */
+	uart_puts(UART1_BASE, "\nEXCEPTION_TEST: triggering `twi 31, r0, 0` (should panic)...\n");
+	__asm__ volatile ("twi 31, 0, 0");
+	uart_puts(UART1_BASE, "(!!! test returned from trap -- should not happen)\n");
+#endif
 
 	uart_puts(UART1_BASE, "\nPhase 1 complete. Halting.\n");
 

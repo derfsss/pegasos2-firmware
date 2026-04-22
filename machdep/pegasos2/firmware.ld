@@ -10,10 +10,11 @@
  * left for the Phase-1 stack.
  *
  * Layout (runtime view):
- *   0x00000000..0x000FFFFF  scratch + stack (stack grows down from 1 MiB)
+ *   0x00000000..0x00001FFF   exception vectors (copied from flash LMA at boot)
+ *   0x00002000..0x000FFFFF   scratch + stack (stack grows down from 1 MiB)
  *   0x00100000..             .data then .bss
  *   0x00200000..0x002FFFFF   1 MiB x86 emulator buffer (carved out in C)
- *   0xFFF00000..0xFFF7FFFF   flash: .text + .rodata + LMA(.data)
+ *   0xFFF00000..0xFFF7FFFF   flash: .text + .rodata + LMA(.data) + LMA(.vectors)
  */
 
 OUTPUT_FORMAT("elf32-powerpc", "elf32-powerpc", "elf32-powerpc")
@@ -22,8 +23,9 @@ ENTRY(_reset_vector)
 
 MEMORY
 {
-    flash (rx)  : ORIGIN = 0xFFF00000, LENGTH = 512K
-    dram  (rwx) : ORIGIN = 0x00100000, LENGTH = 1M
+    flash   (rx)  : ORIGIN = 0xFFF00000, LENGTH = 512K
+    dram    (rwx) : ORIGIN = 0x00100000, LENGTH = 1M
+    vectors (rwx) : ORIGIN = 0x00000000, LENGTH = 8K
 }
 
 SECTIONS
@@ -65,6 +67,23 @@ SECTIONS
         _bss_end = .;
     } > dram
 
+    /*
+     * Exception vectors.
+     *
+     *   VMA at 0x00000000 so system-reset@0x100, machine-check@0x200,
+     *   ..., IABR@0x1300 land at the right physical offsets once
+     *   MSR[IP] is cleared.
+     *   LMA in flash so the initial image ships the handlers. reset.S
+     *   copies VMA<-LMA at boot before clearing MSR[IP].
+     */
+    .vectors 0x00000000 : AT(LOADADDR(.data) + SIZEOF(.data)) {
+        _vectors_start = .;
+        KEEP(*(.vectors))
+        . = ALIGN(4);
+        _vectors_end = .;
+    } > vectors
+    _vectors_lma = LOADADDR(.vectors);
+
     _end = .;
 
     /DISCARD/ : {
@@ -74,7 +93,9 @@ SECTIONS
         *(.gnu.attributes)
     }
 
-    /* Code + read-only must fit in 512 KiB flash. */
-    ASSERT(_text_end - 0xFFF00000 + (_data_end - _data_start) <= 0x80000,
+    /* Code + read-only + .data image + .vectors image must fit in 512 KiB flash. */
+    ASSERT(_text_end - 0xFFF00000
+               + (_data_end - _data_start)
+               + (_vectors_end - _vectors_start) <= 0x80000,
            "ERROR: firmware image exceeds 512 KiB flash.")
 }

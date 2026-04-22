@@ -75,6 +75,52 @@ zero_bss:
 	b	zero_bss
 zero_bss_done:
 
+	/*
+	 * Copy .vectors from its LMA in flash to its VMA at 0x00000000.
+	 *   r3 = source = _vectors_lma (in flash)
+	 *   r4 = dest   = _vectors_start (= 0)
+	 *   r5 = end    = _vectors_end
+	 * Same word-copy pattern as .data above. .vectors length is
+	 * ALIGN(4) so the word loop is exact.
+	 */
+	lis	r3, _vectors_lma@ha
+	addi	r3, r3, _vectors_lma@l
+	lis	r4, _vectors_start@ha
+	addi	r4, r4, _vectors_start@l
+	lis	r5, _vectors_end@ha
+	addi	r5, r5, _vectors_end@l
+copy_vec:
+	cmpw	r4, r5
+	bge	copy_vec_done
+	lwz	r0, 0(r3)
+	stw	r0, 0(r4)
+	addi	r3, r3, 4
+	addi	r4, r4, 4
+	b	copy_vec
+copy_vec_done:
+	/*
+	 * Ensure the handler stores are globally visible and any
+	 * prefetched instructions are flushed before we let the CPU
+	 * route an exception through 0x00000000.
+	 */
+	sync
+	isync
+
+	/*
+	 * Clear MSR[IP]. Power-ISA bit 25 (MSB=0), mask 0x00000040 in
+	 * value form. With IP=0, hardware fetches exception handlers
+	 * at 0x00000100..0x00001300 (our installed table) instead of
+	 * 0xFFF00100..0xFFF01300 in the flash image.
+	 * mtmsr is context-synchronising only when paired with
+	 * sync/isync around it per MPC7447 user manual.
+	 */
+	mfmsr	r3
+	li	r4, 0x40
+	andc	r3, r3, r4
+	sync
+	mtmsr	r3
+	isync
+
 	/* r1 = 0x00100000 (stack ceiling). Stack grows down toward 0. */
 	lis	r1, 0x0010
 	li	r0, 0

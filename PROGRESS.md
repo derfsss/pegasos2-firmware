@@ -7,33 +7,46 @@ Read it after `CLAUDE.md` and `docs/START-HERE.md`.
 
 Phase 1 is substantively complete on QEMU. Both headline bugs
 (spec 09 Bug 1 and Bug 2) are implemented and pass their spec-
-defined tests. Phases 2–4 (Forth runtime, NVRAM, boot loader,
+defined tests. Exception vectors + panic handler now installed
+at 0x00000100..0x00001300 with MSR[IP]=0, so any Phase 2+ fault
+prints a register dump on UART1 instead of vanishing into
+unmapped flash. Phases 2–4 (Forth runtime, NVRAM, boot loader,
 client interface) are NOT started.
 
 ## What the firmware currently does
 
 A successful boot of `build/firmware-raw.bin` on
 `qemu-system-ppc -M pegasos2 -m 512 -bios ... -serial ... -display none`
-produces **1,017 bytes** of serial output containing, in order:
+produces **1,078 bytes** of serial output containing, in order:
 
 1. Banner with PVR (0x80020102 = MPC7447A) and DRAM round-trip OK.
 2. Console address and stack pointer.
-3. Full PCI enumeration across both MV64361 host bridges,
+3. Exception-vector install confirmation (`MSR[IP]=0`).
+4. Full PCI enumeration across both MV64361 host bridges,
    including recursion through PCI-to-PCI bridges (`-device
    pci-bridge,...` topologies render the correct tree).
-4. Synthetic x86-emulator self-test (MOV AX / 0F FE PADDB / MOV
+5. Synthetic x86-emulator self-test (MOV AX / 0F FE PADDB / MOV
    AX / HLT) passes.
-5. bochs-VGA Option ROM loaded from the device's PCI ROM BAR and
+6. bochs-VGA Option ROM loaded from the device's PCI ROM BAR and
    POSTed to completion inside our PPC-hosted x86 real-mode
    emulator. Returns to our HLT trampoline at CS:IP=0x0050:0001.
-6. Clean halt.
+7. Clean halt.
 
-No `INTERNAL ERROR`, `UNHANDLED`, `Failed to emulate`, or
-`STUCK CS:IP` strings appear anywhere.
+No `INTERNAL ERROR`, `UNHANDLED`, `Failed to emulate`, `STUCK
+CS:IP`, or `!! PANIC` strings appear anywhere in the default
+build's output.
+
+Building with `-DEXCEPTION_TEST=1` added to CFLAGS triggers a
+deliberate `twi 31, r0, 0` at the end of phase1, which exercises
+the panic path end-to-end and produces a full register dump
+(vector 0x700 Program, SRR0 = address of `twi`, SRR1 = 0x00020000
+= trap bit, all 32 GPRs, LR/CTR/XER/CR/MSR/DAR/DSISR). Not
+enabled in the default build.
 
 ## Commit history (as of this writing)
 
 ```
+(new)    Exception vectors + panic handler (spec 01 §Exception vectors)
 d2f58fc  x86emu: 0F FE (PADDB) handler (spec 09 bullet)
 c5b0807  Option-ROM execution: bochs-VGA VBIOS runs clean (Bug 1 fix)
 d7ecb1   x86emu self-test (6b+6c): sys glue, DRAM-backed data/bss
@@ -51,7 +64,7 @@ cced4b5  Phase 1 banner on UART1
 | Step | Topic | Status |
 |---|---|---|
 | 1 | Build system | Done. Makefile + linker script + reset trampoline. |
-| 2 | CPU init + banner on UART1 | Done on QEMU. Real-HW init (cache invalidate, BAT setup, clock-gen probe) deferred. |
+| 2 | CPU init + banner on UART1 | Done on QEMU. Exception vectors installed at 0x100..0x1300 with MSR[IP]=0. Real-HW init (cache invalidate, BAT setup, clock-gen probe, MSR[ME]=1, decrementer arm) deferred. |
 | 3 | DRAM init | Done on QEMU (QEMU pre-wires DRAM). Real-HW DDR init sequence (docs/02 §"DDR init sequence" steps 1–12, SPD probe, mode-register programming) is **not implemented**. |
 | 4 | PCI enumeration (Bug 2 fix) | Done. Spec 03 Tests #1 + #2 pass. BAR sizing + bridge window programming not yet done. |
 | 5 | VT8231 full init | Partial -- UART1 chain only. IDE, USB, AC'97, PM, SMBus, PIC are not initialised. |
@@ -67,9 +80,11 @@ cced4b5  Phase 1 banner on UART1
 
 ```
 machdep/pegasos2/
-├── reset.S              reset-vector trampoline (data/bss copy, stack init, call C)
-├── firmware.ld          linker script (flash @0xFFF00000, dram @0x00100000)
+├── reset.S              reset-vector trampoline (data/bss/vectors copy, MSR[IP]=0, stack init, call C)
+├── firmware.ld          linker script (flash @0xFFF00000, dram @0x00100000, vectors @0x00000000)
 ├── phase1.c             Phase-1 C entry: bring up hardware, run tests
+├── exceptions.S         12 vector stubs at 0x100..0x1300 + common_trap save-all path
+├── panic.c              panic_dump(): UART1 register dump for unrecoverable exceptions
 ├── pegasos2.h           memory-map constants (flash, MV64361, PCI windows, UART)
 ├── io.h                 inline-asm MMIO accessors (BE + LE variants, byte)
 ├── uart16550.c/h        polled 16550 driver
@@ -85,8 +100,9 @@ machdep/pegasos2/
 ### Memory layout (runtime, on QEMU)
 
 ```
-0x00000000..0x000FFFFF   scratch + stack (stack grows down from 0x100000)
-0x00100000..0x001FFFFF   .data + .bss (1 MiB reserved)
+0x00000000..0x00001FFF   exception vectors (8 KiB, copied from flash LMA)
+0x00002000..0x000FFFFF   scratch + stack (stack grows down from 0x100000)
+0x00100000..0x001FFFFF   .data + .bss + panic_frame + panic_stack
 0x00200000..0x002FFFFF   x86emu 1 MiB buffer (X86EMU_MEM_PADDR)
 0x0000_xxxx              DRAM, 512 MiB total on -m 512
 0x80000000..0xBFFFFFFF   PCI1 mem0 window (direct-mapped)
@@ -225,6 +241,27 @@ maps it at `0xFFF00000..0xFFF7FFFF`. We build for QEMU's layout.
 A real-HW-ready build would need to either relocate to 0xFFF80000
 or ship two copies for aliasing -- this is a known open item.
 
+### 11. Exception-vector install timing
+
+`reset.S` copies the `.vectors` section from its flash LMA to
+VMA 0x00000000, then clears MSR[IP] *before* calling
+`phase1_c_main`. This means exceptions fire into our handlers
+for the entirety of Phase 1 C. The vectors themselves live at
+0x0100..0x1300; the common save-all path is at 0x1400;
+`_panic_frame` (168 bytes) and `_panic_stack` (4 KiB) are in
+`.bss`. Any exception calls `panic_dump()` which prints a full
+register dump on UART1 with a distinctive `!! PANIC:` prefix
+(so existing test-grep patterns like `grep -E "PANIC|UNHANDLED"`
+catch it), then spins.
+
+If future code needs to take recoverable exceptions (decrementer
+tick, external interrupt, syscall for the client interface),
+the respective vector stub must be replaced with a real handler
+that returns via `rfi` instead of falling through to
+`common_trap`. The stubs' `VECTOR_STUB` macro in `exceptions.S`
+is a natural split point -- replace one stub at a time without
+disturbing the rest.
+
 ## Spec questions pending maintainer response
 
 `SPEC-QUESTIONS.md` has three active items, all of which this
@@ -251,11 +288,16 @@ downstream BARs land inside the bridge's forwarded window.
 Output: a printable resource map. Prerequisite to most later
 device init.
 
-**Exception-vector stubs at 0x00000100..0x00001300.** Spec 01
-lists the required vectors. Install panic handlers that print
-register state on UART1. Flip `MSR[IP]` to 0 once vectors are in
-place. Without this, any exception during Phase 2+ transfers
-control into unmapped flash.
+**Enable MSR[ME] and wire external-interrupt / decrementer
+handlers.** Vectors are installed (see gotcha 11 below), but all
+of them currently land in panic_dump. Spec 01 calls for:
+- MSR[ME]=1 so a bad bus cycle raises a recoverable machine
+  check instead of a CHECKSTOP.
+- External-interrupt (0x500) dispatch chain: MV64361 main/GPP
+  IC → VT8231 PIC → registered handler.
+- Decrementer (0x900) for a 1 ms tick + `get-msecs` Forth word.
+- Syscall (0xC00) for the IEEE-1275 client-interface trampoline
+  (spec 06).
 
 ### Mid-term, enables real work
 
