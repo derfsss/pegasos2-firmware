@@ -262,6 +262,93 @@ static unsigned probe_assign_and_print_bars(int host, uint8_t bus, uint8_t dev,
 	return cmd_bits;
 }
 
+/* ---------- bridge-window programming ------------------------ */
+
+/*
+ * Granularities mandated by the PCI 2.3 bridge header:
+ *   MEM_BASE/LIMIT (0x20/0x22, 16-bit each): 1 MiB.
+ *   IO_BASE/LIMIT  (0x1C/0x1D, 8-bit each):  4 KiB.
+ *   The register value holds the upper bits of the address; the
+ *   implied low bits are 0 for BASE and 1 for LIMIT, which is why
+ *   a single-byte allocation inflates the bridge window to a full
+ *   granularity block.
+ */
+#define BRIDGE_MEM_GRANULE   0x00100000u
+#define BRIDGE_IO_GRANULE    0x00001000u
+
+static uint16_t mem_window_encode(uint32_t addr)
+{
+	/* addr bits 31..20 go into reg bits 15..4; reg bits 3..0 are
+	 * reserved-zero. */
+	return (uint16_t)((addr >> 16) & 0xFFF0u);
+}
+
+static uint8_t io_window_encode(uint32_t addr)
+{
+	/* addr bits 15..12 go into reg bits 7..4; reg bits 3..0 hold
+	 * the IO-capability flag (0 = 16-bit IO, which is our mode). */
+	return (uint8_t)((addr >> 8) & 0xF0u);
+}
+
+static void bridge_program_window(int host, uint8_t bus, uint8_t dev,
+				  uint8_t fn,
+				  uint32_t mem_start, uint32_t mem_end,
+				  uint32_t io_start,  uint32_t io_end,
+				  int depth)
+{
+	put_indent(depth);
+	uart_puts(UART1_BASE, "  -> bridge windows: ");
+
+	if (mem_end > mem_start) {
+		const uint16_t mb = mem_window_encode(mem_start);
+		const uint16_t ml = mem_window_encode(mem_end - 1u);
+		pci_cfg_write16(host, bus, dev, fn, PCI_BRIDGE_MEM_BASE,  mb);
+		pci_cfg_write16(host, bus, dev, fn, PCI_BRIDGE_MEM_LIMIT, ml);
+		uart_puts(UART1_BASE, "mem 0x");
+		uart_put_hex32(UART1_BASE, mem_start);
+		uart_puts(UART1_BASE, "..0x");
+		uart_put_hex32(UART1_BASE,
+			       (uint32_t)((uint32_t)ml << 16) | 0xFFFFFu);
+		uart_puts(UART1_BASE, " ");
+	} else {
+		/* Disabled per PCI 2.3: LIMIT < BASE. */
+		pci_cfg_write16(host, bus, dev, fn, PCI_BRIDGE_MEM_BASE,
+				0xFFF0u);
+		pci_cfg_write16(host, bus, dev, fn, PCI_BRIDGE_MEM_LIMIT,
+				0x0000u);
+		uart_puts(UART1_BASE, "mem <disabled> ");
+	}
+
+	if (io_end > io_start) {
+		const uint8_t ib = io_window_encode(io_start);
+		const uint8_t il = io_window_encode(io_end - 1u);
+		pci_cfg_write8(host, bus, dev, fn, PCI_BRIDGE_IO_BASE,  ib);
+		pci_cfg_write8(host, bus, dev, fn, PCI_BRIDGE_IO_LIMIT, il);
+		uart_puts(UART1_BASE, "io 0x");
+		uart_put_hex16(UART1_BASE, (uint16_t)io_start);
+		uart_puts(UART1_BASE, "..0x");
+		uart_put_hex16(UART1_BASE,
+			       (uint16_t)(((uint16_t)il << 8) | 0x0FFFu));
+	} else {
+		pci_cfg_write8(host, bus, dev, fn, PCI_BRIDGE_IO_BASE,  0xF0u);
+		pci_cfg_write8(host, bus, dev, fn, PCI_BRIDGE_IO_LIMIT, 0x00u);
+		uart_puts(UART1_BASE, "io <disabled>");
+	}
+
+	/*
+	 * Our allocator doesn't separate prefetchable from non-prefetch,
+	 * so the bridge forwards everything through the non-prefetch
+	 * MEM window. Explicitly disable PREFETCH to avoid ambiguous
+	 * coverage if any reset default happens to be non-zero.
+	 */
+	pci_cfg_write16(host, bus, dev, fn, PCI_BRIDGE_PREFETCH_BASE,
+			0xFFF0u);
+	pci_cfg_write16(host, bus, dev, fn, PCI_BRIDGE_PREFETCH_LIMIT,
+			0x0000u);
+
+	uart_puts(UART1_BASE, "\n");
+}
+
 /* ---------- enumeration ------------------------------------- */
 
 /* Shared per-host bus-number allocator. Handed to every nested call
@@ -325,12 +412,64 @@ static void pci_scan_function(struct walk_ctx *ctx, uint8_t bus,
 		pci_cfg_write8(ctx->host, bus, dev, fn,
 			       PCI_BRIDGE_BUS_SUBORDINATE, 0xFFu);
 
+		/*
+		 * Pad both allocators to the bridge-window granularity
+		 * BEFORE descending, so the subtree's first allocation
+		 * lines up with a window boundary. The saved *_start
+		 * values become the bridge's BASE; the allocator values
+		 * after the recursive walk become the bridge's LIMIT.
+		 */
+		uint32_t mem_start = align_up(s_alloc_mem_next[ctx->host],
+					      BRIDGE_MEM_GRANULE);
+		uint32_t io_start  = align_up(s_alloc_io_next[ctx->host],
+					      BRIDGE_IO_GRANULE);
+		s_alloc_mem_next[ctx->host] = mem_start;
+		s_alloc_io_next [ctx->host] = io_start;
+
 		put_indent(depth);
 		uart_puts(UART1_BASE, "  -> recurse into bus 0x");
 		uart_put_hex8(UART1_BASE, secondary);
 		uart_puts(UART1_BASE, "\n");
 
 		pci_scan_bus(ctx, secondary, depth + 1);
+
+		uint32_t mem_end = s_alloc_mem_next[ctx->host];
+		uint32_t io_end  = s_alloc_io_next [ctx->host];
+
+		bridge_program_window(ctx->host, bus, dev, fn,
+				      mem_start, mem_end,
+				      io_start,  io_end,
+				      depth);
+
+		/*
+		 * Enable the corresponding forwarding bits on the
+		 * bridge's own command register. Without this, the
+		 * bridge does not claim matching cycles on the primary
+		 * bus no matter what BASE/LIMIT says. MASTER is already
+		 * set from the earlier probe_assign path; only MEM / IO
+		 * might still be clear if the bridge had no mem/io BAR
+		 * of its own.
+		 */
+		uint16_t fwd_cmd = pci_cfg_read16(ctx->host, bus, dev, fn,
+						  PCI_COMMAND);
+		if (mem_end > mem_start) fwd_cmd |= PCI_CMD_MEM;
+		if (io_end  > io_start ) fwd_cmd |= PCI_CMD_IO;
+		pci_cfg_write16(ctx->host, bus, dev, fn, PCI_COMMAND, fwd_cmd);
+
+		/*
+		 * Bridge LIMIT rounds the subtree's end UP to the next
+		 * granule boundary (that's just how the encoding works:
+		 * the low 20 or 12 implied bits are all-1s). Advance our
+		 * allocator to match, otherwise a sibling device on the
+		 * parent bus might be assigned an address that falls
+		 * inside this bridge's now-inflated window.
+		 */
+		if (mem_end > mem_start)
+			s_alloc_mem_next[ctx->host] =
+				align_up(mem_end, BRIDGE_MEM_GRANULE);
+		if (io_end > io_start)
+			s_alloc_io_next[ctx->host] =
+				align_up(io_end, BRIDGE_IO_GRANULE);
 
 		uint8_t highest = (uint8_t)(ctx->next_bus - 1u);
 		pci_cfg_write8(ctx->host, bus, dev, fn,

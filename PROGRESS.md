@@ -51,7 +51,8 @@ enabled in the default build.
 ## Commit history (as of this writing)
 
 ```
-(new)    PCI walker: BAR address assignment + cmd-register enable
+(new)    PCI walker: bridge MEM/IO window programming
+e59c2c7  PCI walker: BAR address assignment + cmd-register enable
 48ce9a7  PCI walker: BAR sizing (non-destructive probe)
 cea94f8  Exception vectors + panic handler (spec 01 §Exception vectors)
 d2f58fc  x86emu: 0F FE (PADDB) handler (spec 09 bullet)
@@ -73,7 +74,7 @@ cced4b5  Phase 1 banner on UART1
 | 1 | Build system | Done. Makefile + linker script + reset trampoline. |
 | 2 | CPU init + banner on UART1 | Done on QEMU. Exception vectors installed at 0x100..0x1300 with MSR[IP]=0. Real-HW init (cache invalidate, BAT setup, clock-gen probe, MSR[ME]=1, decrementer arm) deferred. |
 | 3 | DRAM init | Done on QEMU (QEMU pre-wires DRAM). Real-HW DDR init sequence (docs/02 §"DDR init sequence" steps 1–12, SPD probe, mode-register programming) is **not implemented**. |
-| 4 | PCI enumeration (Bug 2 fix) | Done. Spec 03 Tests #1 + #2 pass. BAR **sizing and assignment** done: walker assigns 32-bit mem from 0x80000000 upward and PCI-side I/O from 0x1000 upward, enables PCI_COMMAND bits per device. Bridge MEM/IO-**window** programming (parent's forwarded range for bus-forwarded MMIO/IO) still pending. |
+| 4 | PCI enumeration (Bug 2 fix) | Done. Spec 03 Tests #1 + #2 pass. Full PCI resource pipeline: sizing, BAR assignment, cmd-register enable, and bridge MEM/IO-window programming (BASE/LIMIT at 0x20/0x22 and 0x1C/0x1D, with allocator padding to 1 MiB / 4 KiB granularity around recursion so devices behind a bridge are reachable via CPU MMIO). Prefetchable window still shares the non-prefetch allocator; 64-bit-above-4 GiB not supported. |
 | 5 | VT8231 full init | Partial -- UART1 chain only. IDE, USB, AC'97, PM, SMBus, PIC are not initialised. |
 | 6 | OF Forth runtime | Not started. |
 | 7 | NVRAM (M48T59) | Not started. |
@@ -287,18 +288,23 @@ Pick based on appetite. Each is roughly a single focused commit.
 
 ### Near-term, unblocks later work
 
-**PCI-to-PCI bridge MEM/IO-window programming.** BAR assignment
-is done single-pass (each device picks up an address from the
-host's running allocator, and command-register bits get enabled).
-What's missing for devices *behind* a bridge is the bridge's own
-MEM_BASE/LIMIT (0x20/0x22) and IO_BASE/LIMIT (0x1C/0x1D) pair:
-until those enclose the subtree's assignments, CPU-side MMIO at
-the assigned address won't be forwarded past the bridge. The
-walker already knows every subtree's allocator range (it's just
-the delta in `s_alloc_{mem,io}_next[host]` around the recursion
-call); a second pass that writes base/limit on unwind is the
-natural next step. Real HW exposes the e1000-behind-bridge at
-that point; today it enumerates but remains unreachable via MMIO.
+**Enable MSR[ME]=1 + real handlers for decrementer / ExtInt /
+syscall.** Vectors are installed and every one currently lands
+in panic_dump. Spec 01 calls for MSR[ME]=1 so machine checks are
+recoverable; a 1 kHz decrementer tick to drive `get-msecs`; an
+external-interrupt dispatch chain MV64361 IC -> VT8231 PIC ->
+registered handler; and a syscall (0xC00) trampoline for the
+IEEE-1275 client interface (spec 06). Each replaces one stub in
+`exceptions.S` with a real handler that returns via `rfi`.
+
+**Prefetchable memory window + 64-bit BAR support.** The walker
+currently routes every memory BAR (prefetchable or not) through
+the bridge's non-prefetch window, and places every 64-bit BAR
+below 4 GiB with the high dword = 0. Splitting prefetch into its
+own allocator and window would let AGP-style framebuffers behind
+a bridge be forwarded with prefetch hints preserved. Making the
+high-half usable is only worth it once a device actually requires
+addresses >4 GiB (none of our QEMU test devices do).
 
 **Enable MSR[ME] and wire external-interrupt / decrementer
 handlers.** Vectors are installed (see gotcha 11 below), but all
