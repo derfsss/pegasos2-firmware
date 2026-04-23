@@ -59,6 +59,7 @@ PHASE1_OBJS := \
     $(BUILD)/uart16550.o \
     $(BUILD)/mv64361.o \
     $(BUILD)/vt8231.o \
+    $(BUILD)/m48t59.o \
     $(BUILD)/pci_walker.o \
     $(BUILD)/x86_glue.o \
     $(BUILD)/x86emu_stubs.o \

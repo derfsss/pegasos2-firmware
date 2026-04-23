@@ -29,9 +29,18 @@
  *    * machine_probe_read/write do the access unconditionally for now;
  *      wiring them through a "probe active" flag in the DSI handler is
  *      a later commit (risk #6 from the planning doc).
- *    * NVRAM (M48T59) is not implemented. The machine_nvram_* hooks
- *      return errors so SF's nvram.c cleanly reports "nvram unavailable"
- *      rather than looping or crashing.
+ *    * NVRAM (M48T59) driver is wired in. The machine_nvram_* hooks
+ *      expose the 1 KiB "system partition" from spec 08 (M48T59 offsets
+ *      0x0200..0x05FF) to SF. Firmware-private state, the OS-specific
+ *      partition, and RTC access are deferred to later commits.
+ *
+ *      QEMU caveat: pegasos2 in QEMU 10.2 does NOT instantiate an
+ *      M48T59 (see hw/ppc/pegasos.c -- only a VT8231 built-in RTC +
+ *      RTAS NVRAM hypercalls for guest Linux). Our reads land on
+ *      unmapped VT8231 I/O space and return 0, so the magic check
+ *      fails and SF falls back to compile-time defaults every boot
+ *      -- same observable behaviour as the pre-driver stubs. The
+ *      code is correct per spec 08 for real Pegasos II hardware.
  */
 
 #include <stdarg.h>
@@ -46,6 +55,7 @@
 #include "../pegasos2.h"
 #include "../uart16550.h"
 #include "../io.h"
+#include "../m48t59.h"
 
 /* vbprintf lives in SF's stdlib.c; declared in its stdlib.h but not
  * via defs.h's include chain directly. Forward-declare locally. */
@@ -379,32 +389,105 @@ void machine_test_pass   (Environ *e)         { (void)e; }
 void machine_test_fail   (Environ *e)         { (void)e; }
 
 /* --------------------------------------------------------------- *
- *  NVRAM (M48T59) -- not implemented yet                            *
+ *  NVRAM (M48T59) -- system partition (spec 08 §NVRAM partitioning) *
  * --------------------------------------------------------------- */
+
+/*
+ * SF's nvram.c wraps every stored OF environment variable in a
+ * 6-byte header:
+ *     [0..1]  magic 0xBE 0xEF
+ *     [2..3]  payload length, big-endian (bytes after the header,
+ *             excluding the trailing NUL)
+ *     [4..5]  two's-complement checksum of the first 6+payload bytes
+ *             (the payload sum plus these two bytes must equal 0
+ *             modulo 256 per byte lane, i.e. the running 16-bit sum
+ *             of every byte must equal 0 mod 0x10000).
+ * After the header comes the ASCII "name=value" blob and a trailing
+ * NUL. nvram.c's NVRAM_HEADER is 6, NVRAM_MAX is g_nvram_size - 8.
+ *
+ * machine_nvram_size reports the window we expose to SF: the 1 KiB
+ * system partition per spec 08 (M48T59 offsets 0x0200..0x05FF).
+ *
+ * machine_nvram_read loads header + payload + trailing NUL into `buf`
+ * and writes the total byte count to `*len`. SF subtracts NVRAM_HEADER
+ * + 1 to recover the useful payload length. If the magic is missing
+ * or the checksum fails, return any non-NO_ERROR retcode; SF's
+ * load_nvram() then prints "NVRAM is corrupt, reseting to default
+ * values" and proceeds with compile-time defaults.
+ *
+ * machine_nvram_write stores the prepared buffer verbatim. SF writes
+ * at most NVRAM_HEADER + payload + 1 bytes; bounds-check here so a
+ * corrupted caller can't scribble past the partition.
+ */
 
 uInt
 machine_nvram_size(Environ *e)
 {
 	(void)e;
-	/* 0 signals "no NVRAM" to SF's nvram.c, which then treats every
-	 * getenv as "not found" and every setenv as a no-op. Once we
-	 * write an M48T59 driver, return the real 8 KiB. */
-	return 0u;
+	return M48T59_SYSTEM_SIZE;
 }
 
 Retcode
 machine_nvram_read(Environ *e, uChar *buf, uInt *len)
 {
-	(void)e; (void)buf;
-	if (len) *len = 0;
-	return E_NO_DEVICE;
+	(void)e;
+
+	if (buf == NULL || len == NULL)
+		return E_NO_DEVICE;
+
+	*len = 0;
+
+	/* Peek the header to determine the payload length before reading
+	 * the rest. Lets us return early on a fresh / corrupt NVRAM
+	 * without slurping 1 KiB of 0xFF. */
+	uChar hdr0 = m48t59_read_byte(M48T59_SYSTEM_OFFSET + 0);
+	uChar hdr1 = m48t59_read_byte(M48T59_SYSTEM_OFFSET + 1);
+
+	if (hdr0 != 0xBEu || hdr1 != 0xEFu)
+		return E_NO_DEVICE;
+
+	uChar hdr2 = m48t59_read_byte(M48T59_SYSTEM_OFFSET + 2);
+	uChar hdr3 = m48t59_read_byte(M48T59_SYSTEM_OFFSET + 3);
+	uInt  payload_len = ((uInt)hdr2 << 8) | (uInt)hdr3;
+
+	/* Total bytes SF expects: 6 header + payload + 1 trailing NUL. */
+	uInt total = 6u + payload_len + 1u;
+
+	if (total > M48T59_SYSTEM_SIZE)
+		return E_NO_DEVICE;
+
+	for (uInt i = 0; i < total; i++)
+		buf[i] = m48t59_read_byte(M48T59_SYSTEM_OFFSET + i);
+
+	/* Validate checksum: sum of all header+payload bytes (excluding
+	 * the trailing NUL) should fold to zero in the low 16 bits. The
+	 * two checksum bytes were set to -sum at write time. */
+	uInt sum = 0;
+	for (uInt i = 0; i < 6u + payload_len; i++)
+		sum += buf[i];
+
+	if ((sum & 0xFFFFu) != 0u)
+		return E_NO_DEVICE;
+
+	*len = total;
+	return NO_ERROR;
 }
 
 Retcode
 machine_nvram_write(Environ *e, uChar *buf, uInt len)
 {
-	(void)e; (void)buf; (void)len;
-	return E_NO_DEVICE;
+	(void)e;
+
+	if (buf == NULL || len == 0u)
+		return E_NO_DEVICE;
+
+	if (len > M48T59_SYSTEM_SIZE)
+		return E_OUT_OF_PROM;
+
+	for (uInt i = 0; i < len; i++)
+		m48t59_write_byte(M48T59_SYSTEM_OFFSET + i, buf[i]);
+
+	return NO_ERROR;
 }
 
 /* --------------------------------------------------------------- *
