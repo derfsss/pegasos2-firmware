@@ -201,13 +201,21 @@ $(BUILD)/of_machdep.o: $(SF_MACHDEP)/machdep.c | $(BUILD)
 OF_MACHDEP_OBJS := \
     $(BUILD)/of_machdep.o \
     $(BUILD)/of_platform.o \
-    $(BUILD)/of_ci_entry.o
+    $(BUILD)/of_ci_entry.o \
+    $(BUILD)/of_boot_kernel.o \
+    $(BUILD)/of_boot_kernel_asm.o
 
 $(BUILD)/of_platform.o: $(SF_MACHDEP)/platform.c | $(BUILD)
 	$(CC) $(SF_CFLAGS) -I$(MACHDEP) -c $< -o $@
 
 $(BUILD)/of_ci_entry.o: $(SF_MACHDEP)/ci_entry.c | $(BUILD)
 	$(CC) $(SF_CFLAGS) -I$(MACHDEP) -c $< -o $@
+
+$(BUILD)/of_boot_kernel.o: $(SF_MACHDEP)/boot_kernel.c | $(BUILD)
+	$(CC) $(SF_CFLAGS) -I$(MACHDEP) -c $< -o $@
+
+$(BUILD)/of_boot_kernel_asm.o: $(SF_MACHDEP)/boot_kernel.S | $(BUILD)
+	$(CC) $(ASFLAGS) -c $< -o $@
 
 # Append OF to the firmware link target. phase1_c_main() calls SF's
 # main() directly; without these objects the link would fail.
