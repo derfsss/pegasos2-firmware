@@ -44,24 +44,39 @@ ExtInt → CI Tier-B → SMBus):
    both a 1-arg/1-ret and a 4-arg/1-ret dispatch shape. Returns
    phandle of /chosen and the decoded stdout ihandle.
 
-5. **Spec-07 boot loader** (`b25795c`, `cb71f77`, `0bf3942`).
-   Three-commit slice of the spec-07 boot path that proves the full
-   register handoff end-to-end on QEMU. Boot 1/N: `boot-kernel`
-   Forth word + ELF32-PPC-BE header validator + machine_jump_os asm
-   trampoline (spec-07 register convention: r3=0, r4=0,
-   r5=&ci_handler, r6=0, r7=entry; MSR[EE] cleared).
-   Boot 2/N: PT_LOAD walker with memcpy/zero-fill + a minimal
-   in-tree test kernel (`test_kernel/kernel.S`) that prints
-   "KERNEL OK r5=XXXXXXXX" via UART1 MMIO and traps. The
-   r5 print is our evidence: it shows the firmware's
-   ci_handler address reaching the OS.
-   Boot 3/N: hardening pass -- restructured validator into two
-   passes (validate-all, then load-all), plus 8 new bounds checks
-   (phentsz, phnum, phoff overflow, per-PT_LOAD p_offset/p_vaddr
-   overflow, filesz<=memsz, no flash overlap, e_entry coverage). New
-   `test-boot-bad` Forth word mutates 6 scratch ELF headers to
-   exercise every rejection path; `6/6 PASS` observed on mon:stdio.
-   Real block-device + FS reading still deferred.
+5. **Spec-07 boot loader** (`b25795c`..`b2699a6`). Multi-commit
+   slice of the spec-07 boot path that proves the full register
+   handoff end-to-end on QEMU and gets the firmware spec-compliant
+   against docs/07-boot-loader.md.
+   Boot 1/N (`b25795c`): `boot-kernel` Forth word + ELF32-PPC-BE
+   header validator + machine_jump_os asm trampoline (spec-07
+   register convention: r3=0, r4=0, r5=&ci_handler, r6=0, r7=entry;
+   MSR[EE] cleared).
+   Boot 2/N (`cb71f77`): PT_LOAD walker with memcpy/zero-fill + a
+   minimal in-tree test kernel (`test_kernel/kernel.S`) that prints
+   "KERNEL OK r5=XXXXXXXX" via UART1 MMIO and traps. The r5 print
+   is our evidence: it shows the firmware's ci_handler address
+   reaching the OS.
+   Boot 3/N (`0bf3942`): hardening pass -- restructured validator
+   into two passes (validate-all, then load-all), plus 8 new bounds
+   checks (phentsz, phnum, phoff overflow, per-PT_LOAD
+   p_offset/p_vaddr overflow, filesz<=memsz, no flash overlap,
+   e_entry coverage). New `test-boot-bad` Forth word mutates 6
+   scratch ELF headers; `6/6 PASS` observed on mon:stdio.
+   Boot 4/N (`d9000dd`): spec-07 audit follow-up -- accept ET_DYN
+   (spec §ELF), set r1 to a valid stack above image top per §register
+   state, new `set-bootargs` Forth word + test-ci read-back to
+   populate /chosen/bootargs per §AOS4.
+   Boot 4/N+1 (`26fe157`): `heap-info` Forth word surfaces spec-07
+   §Load-address compliance at runtime; flagged the pre-existing
+   4 MiB pool (0x300000..0x6FFFFF) as OUT-OF-SPEC since it
+   overlapped the 0x400000 default kernel load area.
+   Boot 4/N+2 (`b2699a6`): relocated x86emu to 0x01000000 (was
+   0x00200000) to free that window for a 2 MiB SF pool at
+   0x00200000..0x003FFFFF -- now spec-07 compliant; heap-info
+   prints "OK".
+   Real block-device + FS reading still deferred (G5 BAT setup,
+   G6 non-ELF formats, G7 device-path resolution).
 
 Default file-backed boot is 2,208 bytes with 0 forbidden strings
 across default + bridge + EXCEPTION_TEST. Maintainer-accepted
@@ -132,6 +147,10 @@ enabled in the default build.
 ## Commit history (as of this writing)
 
 ```
+b2699a6  Boot 4/N+2: relocate x86emu to 0x01000000; spec-07 heap compliance
+26fe157  Boot 4/N+1: heap-info Forth word + flag spec-07 heap-placement gap
+d9000dd  Boot 4/N: spec-07 register-state compliance (ET_DYN + r1 + bootargs)
+978648a  PROGRESS.md: record Boot 3/N (boot-kernel hardening)
 0bf3942  Boot 3/N: boot-kernel hardening + test-boot-bad smoke (spec 07)
 ef6fb28  PROGRESS.md: record Boot 1/N + Boot 2/N (spec 07 ELF loader)
 cb71f77  Boot 2/N: PT_LOAD walker + test-boot smoke test (end-to-end spec 07)
