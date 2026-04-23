@@ -44,18 +44,24 @@ ExtInt → CI Tier-B → SMBus):
    both a 1-arg/1-ret and a 4-arg/1-ret dispatch shape. Returns
    phandle of /chosen and the decoded stdout ihandle.
 
-5. **Spec-07 boot loader** (`b25795c`, `cb71f77`). Two-commit
-   slice of the spec-07 boot path that proves the full register
-   handoff end-to-end on QEMU. Boot 1/N: `boot-kernel` Forth
-   word + ELF32-PPC-BE header validator + machine_jump_os asm
+5. **Spec-07 boot loader** (`b25795c`, `cb71f77`, `0bf3942`).
+   Three-commit slice of the spec-07 boot path that proves the full
+   register handoff end-to-end on QEMU. Boot 1/N: `boot-kernel`
+   Forth word + ELF32-PPC-BE header validator + machine_jump_os asm
    trampoline (spec-07 register convention: r3=0, r4=0,
    r5=&ci_handler, r6=0, r7=entry; MSR[EE] cleared).
    Boot 2/N: PT_LOAD walker with memcpy/zero-fill + a minimal
    in-tree test kernel (`test_kernel/kernel.S`) that prints
    "KERNEL OK r5=XXXXXXXX" via UART1 MMIO and traps. The
    r5 print is our evidence: it shows the firmware's
-   ci_handler address reaching the OS. Real block-device + FS
-   reading still deferred.
+   ci_handler address reaching the OS.
+   Boot 3/N: hardening pass -- restructured validator into two
+   passes (validate-all, then load-all), plus 8 new bounds checks
+   (phentsz, phnum, phoff overflow, per-PT_LOAD p_offset/p_vaddr
+   overflow, filesz<=memsz, no flash overlap, e_entry coverage). New
+   `test-boot-bad` Forth word mutates 6 scratch ELF headers to
+   exercise every rejection path; `6/6 PASS` observed on mon:stdio.
+   Real block-device + FS reading still deferred.
 
 Default file-backed boot is 2,208 bytes with 0 forbidden strings
 across default + bridge + EXCEPTION_TEST. Maintainer-accepted
@@ -126,6 +132,8 @@ enabled in the default build.
 ## Commit history (as of this writing)
 
 ```
+0bf3942  Boot 3/N: boot-kernel hardening + test-boot-bad smoke (spec 07)
+ef6fb28  PROGRESS.md: record Boot 1/N + Boot 2/N (spec 07 ELF loader)
 cb71f77  Boot 2/N: PT_LOAD walker + test-boot smoke test (end-to-end spec 07)
 b25795c  Boot 1/N: boot-kernel Forth word -- ELF32 PPC BE header parse + spec 07 handoff
 48ec7d7  SPEC-QUESTIONS: drop-in replacement text for docs/02 §Interrupt controller
