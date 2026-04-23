@@ -103,39 +103,79 @@ CC(machine_init_load)       { (void)e; return NO_ERROR; }
  * --------------------------------------------------------------- */
 
 /*
- * `test-ci ( -- )` constructs a `finddevice "/"` client-interface
- * call-struct on the stack, invokes ci_handler (our spec 06
- * wrapper in ci_entry.c around SF's client_interface), and prints
- * the result on the console.
+ * `test-ci ( -- )` exercises the IEEE-1275 client-interface
+ * dispatcher across two services with different arg/return
+ * signatures and prints each round-trip result:
  *
- * Expected output for a healthy firmware:
+ *   finddevice "/chosen"   -- nargs=1 nrets=1 (path -> phandle)
+ *   getprop <ph> "stdout"  -- nargs=4 nrets=1 (phandle, name,
+ *                             buf, buflen -> actual length)
  *
- *     test-ci: ci_handler ret=0 phandle=0xXXXXXX
+ * A healthy dispatcher prints:
  *
- * A nonzero ret or a phandle of 0 means CI dispatch is broken.
- * This is a synthetic test: our own firmware is both the caller
- * and the callee, so no OS is involved and no r5-publication
- * path is exercised. That will come when the spec-07 boot loader
- * lands.
+ *     test-ci: finddevice /chosen ret=0 phandle=0xXXXXXX
+ *     test-ci: getprop stdout     ret=0 len=4 ihandle=0xXXXXXX
+ *
+ * The stdout property holds an encoded ihandle (big-endian 32-bit
+ * pointer, IEEE-1275 §3.3.3.1.1 "encoded-int") pointing at the
+ * install-console-chosen output device. 4-byte length is expected
+ * on a 32-bit build. The synthetic test is our own firmware
+ * calling ci_handler directly: no OS, no r5-handoff -- that path
+ * lands with the spec-07 boot loader.
  */
 extern int ci_handler(void *args);
 
+static uInt
+be32_load(const uChar *p)
+{
+	return ((uInt)p[0] << 24) | ((uInt)p[1] << 16) |
+	       ((uInt)p[2] << 8)  | (uInt)p[3];
+}
+
 CC(f_test_ci)
 {
-	Cell args[5];
-	static const char path[] = "/";
+	Cell fd_args[5];
+	Cell gp_args[8];
+	static uChar buf[64];
 	int ret;
+	Cell phandle;
+	Cell actual;
 
-	args[0] = (Cell)(uPtr)"finddevice";
-	args[1] = 1;            /* nargs */
-	args[2] = 1;            /* nreturns */
-	args[3] = (Cell)(uPtr)path;
-	args[4] = 0;            /* return slot, filled by dispatch */
+	/* 1) finddevice "/chosen" -- 1 arg, 1 return */
+	fd_args[0] = (Cell)(uPtr)"finddevice";
+	fd_args[1] = 1;
+	fd_args[2] = 1;
+	fd_args[3] = (Cell)(uPtr)"/chosen";
+	fd_args[4] = 0;
 
-	ret = ci_handler(args);
+	ret = ci_handler(fd_args);
+	phandle = fd_args[4];
 
-	cprintf(e, "test-ci: ci_handler ret=%d phandle=0x%X\n",
-	        ret, (unsigned)args[4]);
+	cprintf(e, "test-ci: finddevice /chosen ret=%d phandle=0x%X\n",
+	        ret, (unsigned)phandle);
+
+	if (ret != 0 || phandle == 0)
+		return NO_ERROR;
+
+	/* 2) getprop <phandle> "stdout" buf 64 -- 4 args, 1 return */
+	for (int i = 0; i < (int)sizeof buf; i++)
+		buf[i] = 0;
+
+	gp_args[0] = (Cell)(uPtr)"getprop";
+	gp_args[1] = 4;
+	gp_args[2] = 1;
+	gp_args[3] = phandle;
+	gp_args[4] = (Cell)(uPtr)"stdout";
+	gp_args[5] = (Cell)(uPtr)buf;
+	gp_args[6] = (Cell)sizeof buf;
+	gp_args[7] = 0;
+
+	ret = ci_handler(gp_args);
+	actual = gp_args[7];
+
+	cprintf(e, "test-ci: getprop stdout     ret=%d len=%d ihandle=0x%X\n",
+	        ret, (int)actual,
+	        (actual >= 4) ? (unsigned)be32_load(buf) : 0u);
 
 	return NO_ERROR;
 }
