@@ -160,7 +160,33 @@ wiring in the pegasos2 machine realize function.
 
 ---
 
-## Q5. MV64361 ExtInt cascade produces storm on UART RX under QEMU
+## Q5. MV64361 ExtInt cascade produces storm on UART RX under QEMU (RESOLVED, 4f4b1a4)
+
+**Resolution:** Pegasos2's cascade requires a two-step configuration
+that was not obvious from spec 02 / 04 alone:
+
+1. CUnit arbiter control bit 10 must be set to place the GPP
+   interrupt plane in level-triggered mode. Edge mode is QEMU's
+   reset default but leaves main cause bit 59 latched after the
+   source deasserts.
+2. The handler must read `PCI_1_INTERRUPT_ACKNOWLEDGE_VIRTUAL_REG`
+   (offset 0xCB4) as its first action. In level mode with GPP31
+   asserted, this read invokes `pic_read_irq`/`pic_intack` on the
+   master i8259, advancing ISR/IRR/int_out. Without this read
+   the i8259 IRR bit stays set, "intr" stays high, GPP31 stays
+   high, main cause 59 stays asserted, and the 0x500 vector
+   re-fires at ~300 kHz.
+
+Commit 4f4b1a4 implements both. Interactive REPL keystrokes now
+route through a single interrupt each (confirmed via `-d int`:
+2 EXTERNAL per 2 chars typed).
+
+Kept as an open question for spec clarity: neither spec 02 nor
+04 names the `PCI_1_INTA_VIRT` register or describes the INTA-
+cycle equivalent; this was derived from QEMU source + Marvell
+Discovery II register map. Spec update suggested below.
+
+**Original (now-resolved) finding below for history.**
 
 **Spec claim:** `docs/02-memory-controller.md` §"Interrupt controller"
 and `docs/04-southbridge.md` §"Legacy devices" together imply a

@@ -27,14 +27,17 @@ ExtInt → CI Tier-B → SMBus):
    dispatcher. Observed on mon:stdio: `test-ci` prints
    `ret=0 phandle=0x5134A8`.
 
-3. **ExtInt 0x500** (`7314443`, `0e32580`). QEMU source
-   inspection nailed down the MV64361 IC cascade (main-IC regs
-   at +0x004..0x024; VT8231 aggregated PIC → GPP31 → main cause
-   bit 59). E0 added register constants + a boot-time preflight
-   probe; E1 replaced the 0x500 panic stub with a real
-   dispatcher + handler-registration API (extint.c/h). No
-   consumer yet -- infrastructure lands, first real use comes
-   later per the planning decision.
+3. **ExtInt 0x500 dispatcher** (`7314443`, `0e32580`, `4f4b1a4`).
+   QEMU source inspection nailed the MV64361 IC cascade (main-
+   IC regs at +0x004..0x024; VT8231 PIC → GPP31 → main cause 59).
+   E0 landed register constants + preflight probe. E1 replaced
+   the panic stub with a real dispatcher + ei_install API.
+   **E2 wired UART1 RX as the first consumer** -- requires
+   level-mode GPP via CUNIT_ARBITER bit 10 PLUS an INTA-cycle
+   read of PCI1_INTA_VIRT at handler entry to advance the
+   i8259 state machine; without both, the cascade storms at
+   ~300 kHz (see SPEC-QUESTIONS Q5). Keystroke-driven REPL now
+   works with a single interrupt per character.
 
 4. **CI Tier-A extension** (`018c3f8`). Extended the synthetic
    test-ci Forth word to chain finddevice + getprop, exercising
@@ -109,6 +112,7 @@ enabled in the default build.
 ## Commit history (as of this writing)
 
 ```
+4f4b1a4  ExtInt E2: UART1 RX consumer via level-mode GPP + INTA-cycle handler
 018c3f8  CI/4: test-ci exercises finddevice + getprop for varied arg dispatch
 0e32580  ExtInt E1: 0x500 dispatcher + handler-registration infrastructure
 7314443  ExtInt E0: MV64361 IC register map + preflight probe
