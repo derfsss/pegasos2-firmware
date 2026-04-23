@@ -184,7 +184,8 @@ OF_SUBSET := \
     $(BUILD)/of_root.o \
     $(BUILD)/of_cpu-ppc.o \
     $(BUILD)/of_nvedit.o \
-    $(BUILD)/of_nvram.o
+    $(BUILD)/of_nvram.o \
+    $(BUILD)/of_client.o
 
 .PHONY: of-sf-subset
 of-sf-subset: $(OF_SUBSET)
