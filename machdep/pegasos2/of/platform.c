@@ -99,6 +99,54 @@ CC(machine_go)              { (void)e; return NO_ERROR; }
 CC(machine_init_load)       { (void)e; return NO_ERROR; }
 
 /* --------------------------------------------------------------- *
+ *  test-ci -- synthetic IEEE-1275 client-interface smoke test      *
+ * --------------------------------------------------------------- */
+
+/*
+ * `test-ci ( -- )` constructs a `finddevice "/"` client-interface
+ * call-struct on the stack, invokes ci_handler (our spec 06
+ * wrapper in ci_entry.c around SF's client_interface), and prints
+ * the result on the console.
+ *
+ * Expected output for a healthy firmware:
+ *
+ *     test-ci: ci_handler ret=0 phandle=0xXXXXXX
+ *
+ * A nonzero ret or a phandle of 0 means CI dispatch is broken.
+ * This is a synthetic test: our own firmware is both the caller
+ * and the callee, so no OS is involved and no r5-publication
+ * path is exercised. That will come when the spec-07 boot loader
+ * lands.
+ */
+extern int ci_handler(void *args);
+
+CC(f_test_ci)
+{
+	Cell args[5];
+	static const char path[] = "/";
+	int ret;
+
+	args[0] = (Cell)(uPtr)"finddevice";
+	args[1] = 1;            /* nargs */
+	args[2] = 1;            /* nreturns */
+	args[3] = (Cell)(uPtr)path;
+	args[4] = 0;            /* return slot, filled by dispatch */
+
+	ret = ci_handler(args);
+
+	cprintf(e, "test-ci: ci_handler ret=%d phandle=0x%X\n",
+	        ret, (unsigned)args[4]);
+
+	return NO_ERROR;
+}
+
+static const Initentry init_pegasos2[] = {
+	{ (Byte *)"test-ci", f_test_ci, INVALID_FCODE, F_NONE, T_FUNC HELP(
+			"(--)  invoke ci_handler with `finddevice \"/\"` and print result") },
+	{ NULL, NULL, INVALID_FCODE, F_NONE, T_FUNC HELP("") }
+};
+
+/* --------------------------------------------------------------- *
  *  Stubs for exe/ symbol-lookup helpers                             *
  * --------------------------------------------------------------- */
 
@@ -203,6 +251,7 @@ const Initentry *init_list[] = {
 	init_other,
 	init_device,
 	init_debug,
+	init_pegasos2,
 	NULL
 };
 
