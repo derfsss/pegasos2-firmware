@@ -36,8 +36,18 @@ ExtInt → CI Tier-B → SMBus):
    consumer yet -- infrastructure lands, first real use comes
    later per the planning decision.
 
+4. **CI Tier-A extension** (`018c3f8`). Extended the synthetic
+   test-ci Forth word to chain finddevice + getprop, exercising
+   both a 1-arg/1-ret and a 4-arg/1-ret dispatch shape. Returns
+   phandle of /chosen and the decoded stdout ihandle.
+
 Default file-backed boot is 2,208 bytes with 0 forbidden strings
-across default + bridge + EXCEPTION_TEST.
+across default + bridge + EXCEPTION_TEST. Maintainer-accepted
+deferrals: RTC-via-M48T59 (tier-B get-time-of-day) and the
+W83194 SMBus FSB probe are real-HW-only and held for a later
+session per the "build for QEMU use first, real machine later"
+directive. Spec-07 boot loader (needed for CI `boot` service
+and real `seek`) is a separate milestone.
 
 Phase 1 is substantively complete on QEMU. Both headline bugs
 (spec 09 Bug 1 and Bug 2) are implemented and pass their spec-
@@ -99,6 +109,7 @@ enabled in the default build.
 ## Commit history (as of this writing)
 
 ```
+018c3f8  CI/4: test-ci exercises finddevice + getprop for varied arg dispatch
 0e32580  ExtInt E1: 0x500 dispatcher + handler-registration infrastructure
 7314443  ExtInt E0: MV64361 IC register map + preflight probe
 420e3d0  CI/3: synthetic client-interface smoke test via Forth word test-ci
