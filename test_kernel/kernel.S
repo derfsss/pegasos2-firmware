@@ -44,6 +44,11 @@ __start:
 	 * pointer). Write " r5=" + 8 hex digits. */
 	bl      write_r5
 
+	/* Verify r1 (stack pointer) is set per spec 07 §register state
+	 * ("r1 = a valid small stack in the loaded image's memory
+	 * region"). Firmware sets it to ~4 KiB above the image top. */
+	bl      write_r1
+
 	/* Write terminator newline. */
 	li      r12, 0x0A
 	bl      uart_putc
@@ -99,6 +104,34 @@ write_r5:
 1:
 	rlwinm  r12, r17, 4, 28, 31      /* top nibble of r17 after <<4 */
 	/* Actually we want top nibble first; shift-left r17 by 4, take low 4. */
+	cmpwi   r12, 10
+	blt     2f
+	addi    r12, r12, ('A' - '0' - 10)
+2:
+	addi    r12, r12, '0'
+	bl      uart_putc
+	slwi    r17, r17, 4
+	addic.  r16, r16, -1
+	bne     1b
+
+	mtlr    r14
+	blr
+
+/* write_r1: emit " r1=XXXXXXXX" where X is hex. Same shape as
+ * write_r5. r1 is the stack pointer; since our asm doesn't push/pop
+ * the value is still what the firmware handed us. */
+write_r1:
+	mflr    r14
+	mr      r15, r1                 /* stash r1 value */
+	li      r12, ' '; bl uart_putc
+	li      r12, 'r'; bl uart_putc
+	li      r12, '1'; bl uart_putc
+	li      r12, '='; bl uart_putc
+
+	li      r16, 8
+	mr      r17, r15
+1:
+	rlwinm  r12, r17, 4, 28, 31
 	cmpwi   r12, 10
 	blt     2f
 	addi    r12, r12, ('A' - '0' - 10)

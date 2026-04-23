@@ -35,6 +35,7 @@
 #define ELF_DATA_MSB  2u
 #define ELF_VERSION_1 1u
 #define ELF_TYPE_EXEC 2u
+#define ELF_TYPE_DYN  3u
 #define ELF_MACHINE_PPC 20u
 
 /* Validation caps. Anything beyond these is either nonsense or a
@@ -54,7 +55,7 @@
  * window. */
 #define FLASH_RANGE_START 0xFFF00000u
 
-extern void machine_jump_os(uInt entry, uInt ci_handler_addr);
+extern void machine_jump_os(uInt entry, uInt ci_handler_addr, uInt stack_top);
 extern int  ci_handler(void *args);
 
 /* Embedded test kernel image, linked in from build/test_kernel.elf
@@ -138,11 +139,13 @@ CC(f_boot_kernel)
 		return NO_ERROR;
 	}
 
-	/* e_type (ET_EXEC=2) and e_machine (EM_PPC=20) at offsets 16, 18. */
+	/* e_type and e_machine at offsets 16, 18. Spec 07 §ELF accepts
+	 * ET_EXEC (2) and ET_DYN (3) -- the latter covers statically
+	 * bound position-independent kernels. */
 	uInt e_type    = be16(eh + 16);
 	uInt e_machine = be16(eh + 18);
-	if (e_type != ELF_TYPE_EXEC) {
-		cprintf(e, "boot-kernel: not ET_EXEC (got %d)\n",
+	if (e_type != ELF_TYPE_EXEC && e_type != ELF_TYPE_DYN) {
+		cprintf(e, "boot-kernel: not ET_EXEC or ET_DYN (got %d)\n",
 		        (int)e_type);
 		return NO_ERROR;
 	}
@@ -182,8 +185,11 @@ CC(f_boot_kernel)
 	 * so a bad image can't partially-load. Also track whether e_entry
 	 * falls within any PT_LOAD's p_vaddr..p_vaddr+p_memsz range; an
 	 * entry point outside every loaded segment would jump to unmapped
-	 * or unloaded memory. */
-	int entry_in_phdr = 0;
+	 * or unloaded memory. Track the highest end address seen so we
+	 * can hand the OS a stack pointer sitting immediately above the
+	 * image (spec 07 §register state: r1 = valid small stack). */
+	int  entry_in_phdr = 0;
+	uInt high_end      = 0;
 	for (uInt i = 0; i < phnum; i++) {
 		const uChar *ph   = eh + phoff + i * phentsz;
 		uInt p_type       = be32(ph + 0);
@@ -222,6 +228,8 @@ CC(f_boot_kernel)
 
 		if (entry >= p_vaddr && entry < dst_end)
 			entry_in_phdr = 1;
+		if (dst_end > high_end)
+			high_end = dst_end;
 	}
 	if (!entry_in_phdr) {
 		cprintf(e, "boot-kernel: e_entry 0x%X not in any PT_LOAD\n",
@@ -254,11 +262,28 @@ CC(f_boot_kernel)
 			dst[j] = 0;
 	}
 
-	cprintf(e, "boot-kernel: ELF OK at 0x%X, e_entry=0x%X\n",
-	        (unsigned)addr, (unsigned)entry);
+	/* Stack pointer handed to the OS: 4 KiB of headroom above the
+	 * highest PT_LOAD end, aligned down to 16 (PPC SysV ABI
+	 * requires 16-byte alignment). Spec 07 calls this "a valid
+	 * small stack in the loaded image's memory region"; we
+	 * interpret "region" loosely as "just above the image" since
+	 * the image itself is typically packed end-to-end and offers
+	 * no free words for a stack. OSes replace r1 with their own
+	 * stack within the first few instructions of entry. */
+	uInt stack_top;
+	if (u32_add_ovf(high_end, 0x1000u, &stack_top)) {
+		cprintf(e, "boot-kernel: image top 0x%X +4KiB overflows; "
+		        "using image top\n", (unsigned)high_end);
+		stack_top = high_end;
+	}
+	stack_top &= ~0xFu;
+
+	cprintf(e, "boot-kernel: ELF OK at 0x%X, e_entry=0x%X, "
+	        "r1=0x%X\n",
+	        (unsigned)addr, (unsigned)entry, (unsigned)stack_top);
 	cprintf(e, "             transferring control...\n");
 
-	machine_jump_os(entry, (uInt)(uPtr)&ci_handler);
+	machine_jump_os(entry, (uInt)(uPtr)&ci_handler, stack_top);
 
 	/* machine_jump_os does not return. If we somehow get here the
 	 * OS image returned via blr or similar -- treat as error. */

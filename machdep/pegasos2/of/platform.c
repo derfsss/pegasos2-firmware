@@ -177,6 +177,75 @@ CC(f_test_ci)
 	        ret, (int)actual,
 	        (actual >= 4) ? (unsigned)be32_load(buf) : 0u);
 
+	/* 3) getprop <phandle> "bootargs" buf 64 -- exercises the
+	 * bootargs property the OS will query per spec 07 §AOS4. Starts
+	 * as "" from chosen.c's install_chosen; set-bootargs updates it. */
+	for (int i = 0; i < (int)sizeof buf; i++)
+		buf[i] = 0;
+
+	gp_args[0] = (Cell)(uPtr)"getprop";
+	gp_args[1] = 4;
+	gp_args[2] = 1;
+	gp_args[3] = phandle;
+	gp_args[4] = (Cell)(uPtr)"bootargs";
+	gp_args[5] = (Cell)(uPtr)buf;
+	gp_args[6] = (Cell)sizeof buf;
+	gp_args[7] = 0;
+
+	ret = ci_handler(gp_args);
+	actual = gp_args[7];
+
+	cprintf(e, "test-ci: getprop bootargs   ret=%d len=%d str=\"%s\"\n",
+	        ret, (int)actual, (char *)buf);
+
+	return NO_ERROR;
+}
+
+/*
+ * `set-bootargs ( addr len -- )` — copy a Forth counted-string into
+ * a firmware-owned buffer and publish it on /chosen/bootargs via
+ * prop_set_str. Spec 07 §AOS4: "Everything after amigaboot.of on the
+ * boot command line MUST be passed via /chosen/bootargs." Today we
+ * have no boot-command parser so this is a manual setter; when the
+ * spec-07 `boot` CLI lands it will call this internally.
+ *
+ * Truncates silently at BOOTARGS_MAX so a wild stack can't smear our
+ * .bss. Empty string is allowed (clears bootargs).
+ */
+#define BOOTARGS_MAX 255
+static char machdep_bootargs[BOOTARGS_MAX + 1];
+
+CC(f_set_bootargs)
+{
+	Int  len;
+	Cell addr;
+
+	IFCKSP(e, 2, 0);
+	POP(e, len);
+	POP(e, addr);
+
+	if (len < 0) len = 0;
+	if (len > BOOTARGS_MAX) len = BOOTARGS_MAX;
+
+	const char *src = (const char *)(uPtr)addr;
+	for (Int i = 0; i < len; i++)
+		machdep_bootargs[i] = src[i];
+	machdep_bootargs[len] = '\0';
+
+	if (e->chosen == NULL || e->chosen->props == NULL) {
+		cprintf(e, "set-bootargs: /chosen not installed yet\n");
+		return NO_ERROR;
+	}
+
+	Retcode rc = prop_set_str(e->chosen->props,
+	                          (Byte *)"bootargs", CSTR,
+	                          (Byte *)machdep_bootargs, CSTR);
+	if (rc != NO_ERROR)
+		cprintf(e, "set-bootargs: prop_set_str failed rc=%d\n", (int)rc);
+	else
+		cprintf(e, "set-bootargs: /chosen/bootargs = \"%s\" (%d bytes)\n",
+		        machdep_bootargs, (int)len);
+
 	return NO_ERROR;
 }
 
@@ -193,6 +262,8 @@ static const Initentry init_pegasos2[] = {
 			"(--)  copy built-in test kernel to 0x800000 and transfer") },
 	{ (Byte *)"test-boot-bad", f_test_boot_bad, INVALID_FCODE, F_NONE, T_FUNC HELP(
 			"(--)  exercise boot-kernel hardening with 6 malformed ELF headers") },
+	{ (Byte *)"set-bootargs", f_set_bootargs, INVALID_FCODE, F_NONE, T_FUNC HELP(
+			"(addr len --)  publish string on /chosen/bootargs (spec 07 §AOS4)") },
 	{ NULL, NULL, INVALID_FCODE, F_NONE, T_FUNC HELP("") }
 };
 

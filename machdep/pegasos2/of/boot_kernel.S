@@ -14,6 +14,7 @@
  *  Entry:
  *      r3 = image entry point (PC we want to reach)
  *      r4 = ci_handler address (will land in r5 for the OS)
+ *      r5 = stack_top (will land in r1 for the OS)
  *
  *  The register shuffle must happen in asm because r5 is not a
  *  natural argument register on PPC -- the C ABI uses r3..r10 for
@@ -25,12 +26,14 @@
 	.type   machine_jump_os, @function
 machine_jump_os:
 	/*
-	 * Stash the two arguments in SPRG0/SPRG1 before we touch
-	 * the GPRs we need to load per spec 07. Cheap scratch that
-	 * survives the MSR update.
+	 * Stash entry + ci_handler in SPRG0/SPRG1 before we touch the
+	 * GPRs we need to load per spec 07. r5 already holds the new
+	 * r1 value, so move it directly; r1 is a GPR we never use in
+	 * this function (no stack ops, no callee-saves).
 	 */
 	mtspr   272, 3                  /* SPRG0 = entry */
 	mtspr   273, 4                  /* SPRG1 = ci_handler */
+	mr      1, 5                    /* r1 = stack_top (from arg 3) */
 
 	/* Clear MSR[EE] (bit 16, 0x00008000). Leave MSR[ME]/[RI]
 	 * alone so machine-check and recoverable bits stay set. */
@@ -42,13 +45,12 @@ machine_jump_os:
 	/*
 	 * IEEE-1275 client-program register convention (spec 07 §"Boot-
 	 * time register state"):
+	 *     r1 = small stack above image (set above, before MSR update)
 	 *     r3 = 0
 	 *     r4 = 0
 	 *     r5 = CI handler entry pointer
 	 *     r6 = 0 (reserved)
 	 *     r7 = e_entry (some OSes check it)
-	 *     r1 = any valid stack -- we leave ours in place; the OS
-	 *          will re-point before it needs it.
 	 */
 	mfspr   7, 272                  /* r7 = entry */
 	mfspr   5, 273                  /* r5 = ci_handler */
