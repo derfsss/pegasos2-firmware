@@ -288,6 +288,28 @@ void phase1_c_main(void)
 		  sc_result == 0x0000BABEu ? "  (expected 0xBABE) OK\n"
 					   : "  (expected 0xBABE) FAIL\n");
 
+	/*
+	 * ExtInt preflight: read the MV64361 IC state at boot and print
+	 * the raw values. All four registers should be 0 right after
+	 * reset (no pending causes, all CPU-route masks cleared). Any
+	 * other value would mean either QEMU set spurious bits or our
+	 * register offsets are wrong.
+	 */
+	uart_puts(UART1_BASE, "\nExtInt preflight (MV64361 IC):\n");
+	uart_puts(UART1_BASE, "  main cause L/H = 0x");
+	uart_put_hex32(UART1_BASE, mv64361_read32(MV_IC_MAIN_CAUSE_LOW));
+	uart_puts(UART1_BASE, " / 0x");
+	uart_put_hex32(UART1_BASE, mv64361_read32(MV_IC_MAIN_CAUSE_HIGH));
+	uart_puts(UART1_BASE, "\n  cpu0 mask L/H  = 0x");
+	uart_put_hex32(UART1_BASE, mv64361_read32(MV_IC_CPU0_MASK_LOW));
+	uart_puts(UART1_BASE, " / 0x");
+	uart_put_hex32(UART1_BASE, mv64361_read32(MV_IC_CPU0_MASK_HIGH));
+	uart_puts(UART1_BASE, "\n  gpp cause/mask = 0x");
+	uart_put_hex32(UART1_BASE, mv64361_read32(MV_GPP_INT_CAUSE));
+	uart_puts(UART1_BASE, " / 0x");
+	uart_put_hex32(UART1_BASE, mv64361_read32(MV_GPP_INT_MASK0));
+	uart_puts(UART1_BASE, "\n");
+
 #ifdef EXCEPTION_TEST
 	/*
 	 * Compile-time-gated exception self-test. Builds with

@@ -25,6 +25,41 @@
 #define MV_PCI1_CFG_ADDR       0xC78u    /* != spec 03's 0x8CF8 */
 #define MV_PCI1_CFG_DATA       0xC7Cu    /* != spec 03's 0x8CFC */
 
+/* --------------------------------------------------------------- *
+ *  Interrupt controller (Discovery II §Interrupt Controller)       *
+ * --------------------------------------------------------------- */
+
+/*
+ * 64-bit main cause register, split into two 32-bit halves. Cause
+ * bit N is the N-th internal interrupt source (0..31 = LOW,
+ * 32..63 = HIGH).
+ *
+ * On QEMU pegasos2 the VT8231 southbridge's aggregated PIC output
+ * is wired to MV64361 GPP line 31, which fires main cause bit 59
+ * (P0_GPP24_31). PCI INTA..D from both PCI0+PCI1 cascade through
+ * GPP 12..15, which fires bit 57 (P0_GPP8_15). These routings are
+ * documented in hw/ppc/pegasos.c pegasos2_setup_pci_irq().
+ */
+#define MV_IC_MAIN_CAUSE_LOW   0x004u  /* RO, bits 0..31   */
+#define MV_IC_MAIN_CAUSE_HIGH  0x00Cu  /* RO, bits 32..63  */
+#define MV_IC_CPU0_MASK_LOW    0x014u  /* RW, 1=enabled    */
+#define MV_IC_CPU0_MASK_HIGH   0x01Cu  /* RW               */
+#define MV_IC_CPU0_SEL_CAUSE   0x024u  /* RO, highest-prio pending */
+
+/* GPP (general-purpose I/O repurposed as PCI-IRQ input) controls.
+ * GPP 0..31 map to main cause bits 56..59 (P0_GPP0_7..P0_GPP24_31)
+ * in blocks of 8. Any enabled GPP pin going high will set its
+ * block's main cause bit. */
+#define MV_GPP_INT_CAUSE       0xF108u /* RW1C, bit N = GPP pin N */
+#define MV_GPP_INT_MASK0       0xF10Cu /* RW, mask for CPU0 route  */
+#define MV_GPP_INT_MASK1       0xF114u /* RW, mask for CPU1 route  */
+
+/* Main-cause bit numbers used by this firmware (full enum lives in
+ * hw/pci-host/mv64361.c MV64361_IRQ_*). Cast to the high word when
+ * >= 32. */
+#define MV_IC_BIT_P0_GPP8_15   57u     /* PCI INTA..D cascade      */
+#define MV_IC_BIT_P0_GPP24_31  59u     /* VT8231 PIC cascade       */
+
 /* Which host bridge a PCI config cycle targets. */
 enum {
 	PCI_HOST_0 = 0,
