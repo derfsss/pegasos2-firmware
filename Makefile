@@ -118,11 +118,12 @@ $(BUILD)/x86emu_%.o: $(X86EMU)/x86emu/%.c | $(BUILD)
 #     version rather than any upstream stub.
 #   -I $(SF) so SF's internal stdlib.h / ctype.h / string.h / defs.h
 #     are found before any system header of the same name would be.
-#   -DDEBUG so the DPRINTF() macro expands to real UART prints during
-#     bring-up. Will be disabled once the ok prompt is reliable.
 #   -D_FORTIFY_SOURCE=0 defensively; we're freestanding and have no
 #     libc-side __printf_chk / __fortify_fail to satisfy.
 # Do NOT define:
+#   DEBUG      (enables SF's DPRINTF macro -- ~70 KiB of malloc /
+#               add_prop / resolve_path trace output on every boot.
+#               Re-enable only when diagnosing a specific OF issue.)
 #   STANDALONE (would pull in <stdio.h> and a hosted runtime)
 #   MAIN       (would pull in <stdio.h> inside alloc.c)
 #   LITTLE_ENDIAN, SF_64BIT (neither applies to 32-bit big-endian PPC)
@@ -143,7 +144,6 @@ SF_CFLAGS := \
     -I$(SF_MACHDEP) \
     -I$(SF) \
     -I$(SF)/exe \
-    -DDEBUG \
     -U_FORTIFY_SOURCE
 
 $(BUILD)/of_%.o: $(SF)/%.c | $(BUILD)
