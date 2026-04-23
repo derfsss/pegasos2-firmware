@@ -107,19 +107,24 @@ failsafe_write(Byte *buf, Int len)
 }
 
 /*
- * Read up to `len` bytes from UART1 via the polled RX helper.
+ * Read up to `len` bytes from UART1 without blocking.
  *
- * SmartFirmware's interpret() blocks on input by design -- typed
- * characters must reach the read-eval loop or the `ok` prompt idles
- * forever. We satisfy that by spinning on uart_poll_rx() for the
- * first byte, then opportunistically draining any additional
- * characters the FIFO already has (so a long pasted line arrives
- * atomically rather than one getc-poll per byte). We never block
- * after the first byte, so a slow typist sees responsive echo.
+ * SmartFirmware's "serial" console contract (cmdio.c:468-471) is:
+ *   "input devices may return -2 if no input is pending
+ *    the read call should always be non blocking
+ *    ref. Annex A, 'serial'"
  *
- * QEMU's -serial mon:stdio will deliver key presses to this path.
- * On real HW an interrupt-driven RX is ultimately preferable (frees
- * the CPU), but polled is fine for an interactive Forth REPL.
+ * get_key() loops on this read until a byte arrives, so blocking
+ * semantics at the driver level would deadlock any call site that
+ * only wanted a non-blocking poll -- notably key_down(), called
+ * from display_text() whenever e->paginate is TRUE. That path fires
+ * on every banner line and would freeze the banner at its first
+ * cprintf with a file-backed serial port (no keys arriving).
+ *
+ * So we just drain whatever the UART FIFO holds and return. If
+ * empty, return 0; SF's f_failsafe_read translates that to -2 on
+ * the Forth stack, and get_key loops until the next poll finds a
+ * byte.
  */
 Int
 failsafe_read(Byte *buf, Int len)
@@ -130,10 +135,6 @@ failsafe_read(Byte *buf, Int len)
 	if (len <= 0 || buf == NULL)
 		return 0;
 
-	/* Block until the first character arrives. */
-	buf[n++] = uart_getc(UART1_BASE);
-
-	/* Drain anything else already in the FIFO without blocking. */
 	while (n < len && (c = uart_poll_rx(UART1_BASE)) >= 0)
 		buf[n++] = (Byte)c;
 
