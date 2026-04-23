@@ -56,6 +56,7 @@
 #include "../uart16550.h"
 #include "../io.h"
 #include "../m48t59.h"
+#include "../extint.h"
 
 /* vbprintf lives in SF's stdlib.c; declared in its stdlib.h but not
  * via defs.h's include chain directly. Forward-declare locally. */
@@ -145,6 +146,15 @@ failsafe_read(Byte *buf, Int len)
 	if (len <= 0 || buf == NULL)
 		return 0;
 
+	/* Primary path: interrupt-fed ring populated by uart_rx_handler
+	 * in extint.c. With extint_uart_install + MSR[EE]=1 every
+	 * keystroke reaches the ring before SF even gets here. */
+	while (n < len && (c = extint_uart_pop()) >= 0)
+		buf[n++] = (Byte)c;
+
+	/* Fallback: direct poll. Covers an unexpected config where
+	 * interrupts are disabled or the cascade was never armed --
+	 * cheap, and keeps the contract working in every state. */
 	while (n < len && (c = uart_poll_rx(UART1_BASE)) >= 0)
 		buf[n++] = (Byte)c;
 

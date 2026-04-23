@@ -49,4 +49,21 @@ int  ei_uninstall(int cause_bit);
  * for any bit that is both set in cause and registered. */
 void ei_dispatch(void);
 
+/* --------------------------------------------------------------- *
+ *  UART1 RX consumer -- first real ExtInt client                   *
+ * --------------------------------------------------------------- */
+
+/* Arm the VT8231 i8259 + UART IER + MV64361 GPP31 cascade chain
+ * and register an RX handler on main cause bit 59. Programs the
+ * CUnit arbiter to level-triggered GPP, which is required for
+ * the MV_PCI1_INTA_VIRT read in the handler to advance i8259
+ * state. After this call, MSR[EE]=1 arms delivery. */
+void extint_uart_install(void);
+
+/* Pop one byte from the interrupt-fed RX ring. Returns -1 if
+ * empty. Lock-free single-producer (handler) / single-consumer
+ * (failsafe_read); handlers run with MSR[EE]=0 so no interleave
+ * is possible on UP. */
+int extint_uart_pop(void);
+
 #endif /* EXTINT_H */

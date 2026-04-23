@@ -26,4 +26,11 @@ int  uart_poll_rx(uint32_t base);
 /* Blocking polled RX. Spins until one byte is available, returns it. */
 uint8_t uart_getc(uint32_t base);
 
+/* Enable the 16550's RX-ready (data available) interrupt. Sets
+ * IER[0]. When combined with an external PIC routing the UART's
+ * IRQ line + a handler registered via the ExtInt dispatcher, each
+ * incoming byte triggers an interrupt rather than needing a poll.
+ * Transmit and modem-status interrupts stay off. */
+void uart_enable_rx_irq(uint32_t base);
+
 #endif

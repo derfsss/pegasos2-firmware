@@ -70,3 +70,10 @@ uint8_t uart_getc(uint32_t base)
 	} while (c < 0);
 	return (uint8_t)c;
 }
+
+void uart_enable_rx_irq(uint32_t base)
+{
+	/* IER bit 0 = ERBFI (Enable Received Data Available Interrupt).
+	 * Leave THRE / RLSI / MSI interrupts off. */
+	mmio_write8(base + UART16550_IER, 0x01);
+}

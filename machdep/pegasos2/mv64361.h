@@ -60,6 +60,32 @@
 #define MV_IC_BIT_P0_GPP8_15   57u     /* PCI INTA..D cascade      */
 #define MV_IC_BIT_P0_GPP24_31  59u     /* VT8231 PIC cascade       */
 
+/* CUnit arbiter control. Bit 10 toggles the GPP interrupt plane
+ * between edge-triggered (default, 0) and level-triggered (1).
+ * Level mode is mandatory for cascaded PIC inputs: it enables
+ * (a) auto-clear of main cause bit 59 when the source deasserts,
+ *     via mv64361_gpp_irq's falling-edge path, and
+ * (b) the PCI1_INTA_VIRTUAL register's pic_read_irq gating, so
+ *     reading 0xCB4 advances the i8259 state machine for us.
+ * Without level mode the edge-mode cause-clear write-0 path is
+ * the only option, and it misses bit 59's main-cause clear due
+ * to an operator-precedence quirk in QEMU's model. */
+#define MV_CUNIT_ARB_CTRL      0xF300u
+#define MV_CUNIT_ARB_CTRL_GPP_LEVEL   (1u << 10)
+
+/* PCI-1 Interrupt Acknowledge virtual register. Reading this when
+ * level-mode is on AND GPP31 (the VT8231 PIC cascade line) is
+ * asserted triggers pic_read_irq on the master i8259:
+ *   - ISR bit set for the currently-highest-priority pending IRQ
+ *   - IRR bit cleared (edge-mode PIC inputs)
+ *   - int_out re-evaluated
+ *   - returned value = IRQ_BASE + irq_number (typically 0x20 + n)
+ * This is the de-facto INTA cycle equivalent on Pegasos2 and
+ * must be performed at the start of any cascaded-IRQ handler,
+ * before the device-specific ack (RBR read, etc.) and before the
+ * EOI to i8259 master. */
+#define MV_PCI1_INTA_VIRT      0xCB4u
+
 /* Which host bridge a PCI config cycle targets. */
 enum {
 	PCI_HOST_0 = 0,

@@ -290,12 +290,15 @@ void phase1_c_main(void)
 					   : "  (expected 0xBABE) FAIL\n");
 
 	/*
-	 * Install the ExtInt dispatcher. Masks every cause and zeroes
-	 * the handler table so even a spurious interrupt fires into a
-	 * dispatcher that does nothing. Must precede any MSR[EE]=1 in
-	 * later code paths that want to leave ExtInt routed to us.
+	 * Install the ExtInt dispatcher and the UART1 RX consumer as
+	 * the first real handler. ei_init masks every cause and
+	 * zeroes the handler table; extint_uart_install arms the
+	 * CUNIT level-mode + VT8231 i8259 + UART IER + MV64361
+	 * GPP31 cascade and registers uart_rx_handler on cause 59.
+	 * MSR[EE]=1 is the last step before main().
 	 */
 	ei_init();
+	extint_uart_install();
 
 #ifdef EXCEPTION_TEST
 	/*
@@ -322,6 +325,15 @@ void phase1_c_main(void)
 	 * caller -- reset.S did not set up a back-chain for us.
 	 */
 	extern int main(int argc, char **argv);
+
+	/*
+	 * Leave MSR[EE]=1 for the entire OF runtime. The decrementer
+	 * continues to tick (already proven correct by the self-test
+	 * above) and the UART1 RX handler fires on every keystroke,
+	 * feeding the failsafe_read ring so SF's interpret() loop
+	 * gets typed input without a polling spin.
+	 */
+	enable_ei();
 	(void)main(0, (char **)0);
 
 	uart_puts(UART1_BASE, "\n(OF main() returned -- halting)\n");

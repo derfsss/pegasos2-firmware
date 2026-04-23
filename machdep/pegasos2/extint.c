@@ -26,6 +26,8 @@
 #include "pegasos2.h"
 #include "io.h"
 #include "mv64361.h"
+#include "vt8231.h"
+#include "uart16550.h"
 #include "extint.h"
 
 #define EI_MAX_BIT  64
@@ -38,10 +40,6 @@ ei_init(void)
 	/* Mask every cause from reaching CPU0. */
 	mv64361_write32(MV_IC_CPU0_MASK_LOW,  0u);
 	mv64361_write32(MV_IC_CPU0_MASK_HIGH, 0u);
-
-	/* Clear all GPP pending causes (RW1C: writing 1 clears the
-	 * pending bit on the MV64361; harmless if already clear). */
-	mv64361_write32(MV_GPP_INT_CAUSE, 0xFFFFFFFFu);
 
 	/* Mask every GPP pin from the main IC. Even if a downstream
 	 * device asserts its GPP pin, it won't reach main cause bits. */
@@ -102,4 +100,87 @@ ei_dispatch(void)
 		if ((hi & (1u << b)) && g_ei_handlers[32 + b] != (ei_handler_t)0)
 			g_ei_handlers[32 + b]();
 	}
+}
+
+/* --------------------------------------------------------------- *
+ *  UART1 RX consumer                                                *
+ * --------------------------------------------------------------- */
+
+#define RX_RING_SIZE  128u
+
+static volatile uint8_t  g_rx_ring[RX_RING_SIZE];
+static volatile uint32_t g_rx_head;
+static volatile uint32_t g_rx_tail;
+
+static void
+uart_rx_handler(void)
+{
+	/*
+	 * Pegasos2 cascade handler discipline:
+	 *
+	 *   1. Read MV_PCI1_INTA_VIRT. In level mode this calls
+	 *      pic_read_irq on the master i8259, which sets ISR for
+	 *      the pending IRQ, clears IRR (for edge-sensitive PIC
+	 *      inputs), and re-evaluates int_out. The returned value
+	 *      is IRQ_BASE + irq_number but we don't use it -- the
+	 *      side effect is what matters. Without this step the
+	 *      i8259 keeps "intr" asserted, GPP31 stays high, cause
+	 *      bit 59 stays latched, and we storm.
+	 *   2. Device-specific ack: drain UART RBR until LSR[DR]=0.
+	 *      Each RBR read clears the UART's own int line.
+	 *   3. i8259 EOI (OCW2 = 0x20) to clear the ISR bit we set
+	 *      in step 1; in level-triggered PIC mode this also lets
+	 *      "intr" track the underlying IRR state post-drain.
+	 */
+	(void)mv64361_read32(MV_PCI1_INTA_VIRT);
+
+	int c;
+	while ((c = uart_poll_rx(UART1_BASE)) >= 0) {
+		uint32_t next = (g_rx_head + 1u) % RX_RING_SIZE;
+		if (next != g_rx_tail) {
+			g_rx_ring[g_rx_head] = (uint8_t)c;
+			g_rx_head = next;
+		}
+		/* Ring full: drop byte. Shouldn't happen for interactive
+		 * typing; only matters for scripted mon:stdio floods. */
+	}
+
+	vt8231_pic_eoi_master();
+}
+
+void
+extint_uart_install(void)
+{
+	/* Level-triggered GPP plane. Required for (a) auto-clear of
+	 * main cause 59 on falling edge and (b) the INTA-virtual
+	 * register's pic_read_irq gating. Must precede the cascade
+	 * arming below. */
+	mv64361_write32(MV_CUNIT_ARB_CTRL,
+	                mv64361_read32(MV_CUNIT_ARB_CTRL) |
+	                MV_CUNIT_ARB_CTRL_GPP_LEVEL);
+
+	/* Master + slave i8259 init, UART IRQ 4 unmasked on master. */
+	vt8231_pic_init();
+	vt8231_pic_unmask_master(4);
+
+	/* UART IER[0] raises an interrupt on RX-ready transitions. */
+	uart_enable_rx_irq(UART1_BASE);
+
+	/* GPP31 cascade from VT8231 "intr" -> main cause bit 59. */
+	mv64361_write32(MV_GPP_INT_MASK0,
+	                mv64361_read32(MV_GPP_INT_MASK0) | (1u << 31));
+
+	/* Register the handler + unmask cause 59 in CPU0 route.
+	 * Final gate is MSR[EE] -- enabled by the caller afterwards. */
+	(void)ei_install(MV_IC_BIT_P0_GPP24_31, uart_rx_handler);
+}
+
+int
+extint_uart_pop(void)
+{
+	if (g_rx_head == g_rx_tail)
+		return -1;
+	uint8_t c = g_rx_ring[g_rx_tail];
+	g_rx_tail = (g_rx_tail + 1u) % RX_RING_SIZE;
+	return c;
 }

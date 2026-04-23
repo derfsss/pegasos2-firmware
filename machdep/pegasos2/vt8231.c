@@ -44,3 +44,43 @@ void vt8231_enable_uart1(void)
 	mmio_write8(SUPERIO_IDX_ADDR, 0xF2);
 	mmio_write8(SUPERIO_DAT_ADDR, 0x07);
 }
+
+/* --------------------------------------------------------------- *
+ *  i8259 PIC init + EOI helpers                                     *
+ * --------------------------------------------------------------- */
+
+static inline uint32_t pic_master_cmd (void) { return PCI1_IO_BASE + VT8231_PIC_MASTER_CMD; }
+static inline uint32_t pic_master_data(void) { return PCI1_IO_BASE + VT8231_PIC_MASTER_DATA; }
+static inline uint32_t pic_slave_cmd  (void) { return PCI1_IO_BASE + VT8231_PIC_SLAVE_CMD; }
+static inline uint32_t pic_slave_data (void) { return PCI1_IO_BASE + VT8231_PIC_SLAVE_DATA; }
+
+void vt8231_pic_init(void)
+{
+	/* Master ICW1..ICW4 + OCW1. ICW2 irq_base=0x20 follows PC
+	 * convention; the vector number is returned by the
+	 * MV_PCI1_INTA_VIRT read but we do not use it (we dispatch by
+	 * IRQ index already known from the handler registration). */
+	mmio_write8(pic_master_cmd(),  0x11);   /* ICW1: ICW4 needed, cascade */
+	mmio_write8(pic_master_data(), 0x20);   /* ICW2: vector base */
+	mmio_write8(pic_master_data(), 0x04);   /* ICW3: slave on IR2 */
+	mmio_write8(pic_master_data(), 0x01);   /* ICW4: 8086 mode */
+	mmio_write8(pic_master_data(), 0xFF);   /* OCW1: mask all */
+
+	mmio_write8(pic_slave_cmd(),   0x11);
+	mmio_write8(pic_slave_data(),  0x28);
+	mmio_write8(pic_slave_data(),  0x02);
+	mmio_write8(pic_slave_data(),  0x01);
+	mmio_write8(pic_slave_data(),  0xFF);
+}
+
+void vt8231_pic_unmask_master(int irq)
+{
+	uint8_t mask = mmio_read8(pic_master_data());
+	mask &= (uint8_t)~(1u << (irq & 7));
+	mmio_write8(pic_master_data(), mask);
+}
+
+void vt8231_pic_eoi_master(void)
+{
+	mmio_write8(pic_master_cmd(), 0x20);    /* OCW2: non-specific EOI */
+}
