@@ -22,8 +22,6 @@
  */
 
 #include <stdint.h>
-#include "pegasos2.h"
-#include "uart16550.h"
 
 struct sc_frame {
 	uint32_t gpr[32];   /* 0..124   r0..r31 */
@@ -37,12 +35,6 @@ struct sc_frame {
 
 void syscall_dispatch(struct sc_frame *f)
 {
-	uart_puts(UART1_BASE, "[syscall r3=0x");
-	uart_put_hex32(UART1_BASE, f->gpr[3]);
-	uart_puts(UART1_BASE, " srr0=0x");
-	uart_put_hex32(UART1_BASE, f->srr0);
-	uart_puts(UART1_BASE, "]\n");
-
 	/* Stub return value. Real dispatch will come from spec 06. */
 	f->gpr[3] = 0x0000BABEu;
 }

@@ -308,18 +308,11 @@ void phase1_c_main(void)
 	 * default startup script (probe-all / install-console / banner),
 	 * and enters the interpret() read-eval loop.
 	 *
-	 * Commit 4 just makes the call.  Commits 5..N observe what
-	 * actually happens and fix issues one at a time until we reach
-	 * the `ok` prompt.  If main() returns (e.g. SF decides to exit),
-	 * we fall through to an infinite loop rather than returning to
-	 * the caller -- reset.S did not set up a back-chain for us.
+	 * If main() ever returns (e.g. SF decides to exit), we fall
+	 * through to an infinite loop rather than returning to the
+	 * caller -- reset.S did not set up a back-chain for us.
 	 */
 	extern int main(int argc, char **argv);
-
-	uart_puts(UART1_BASE,
-		  "\nPhase 1 complete. Handing off to OpenFirmware...\n"
-		  "=============================================\n\n");
-
 	(void)main(0, (char **)0);
 
 	uart_puts(UART1_BASE, "\n(OF main() returned -- halting)\n");
