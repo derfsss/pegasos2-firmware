@@ -6,18 +6,18 @@ Read it after `CLAUDE.md` and `docs/START-HERE.md`.
 ## One-line status (2026-04-23)
 
 OF Forth runtime bring-up is in progress as a multi-commit
-series. Commits 1..7 of N are done: machdep.h scaffold, machdep.c
+series. Commits 1..8 of N are done: machdep.h scaffold, machdep.c
 stubs + of-test partial-link target, full SF subset + platform
 glue, OF reaching an `ok` prompt via failsafe, an **interactive
 Forth REPL on serial**, a bugfix making `failsafe_read` strictly
 non-blocking (Commit 6 -- previously a blocking first-byte read
 deadlocked SF's `key_down()` which is polled on every banner line
-when `paginate=TRUE`), and **`-DDEBUG` disabled (Commit 7)**.
-Default file-backed boot now produces a clean 2,350-byte serial
-trace ending in `ok` with no trace noise. `42 .` on mon:stdio
-echoes `42 ok` verbatim (no DPRINTF interleave). Next commits:
-tidy remaining diagnostic prints and retire the phase1 hand-off
-separator once the transition is boring.
+when `paginate=TRUE`), **`-DDEBUG` disabled (Commit 7)**, and
+phase1 hand-off scaffolding retired (Commit 8). Default file-
+backed boot now produces a clean 2,208-byte serial trace ending
+in `ok` with no trace noise and no transitional decoration
+between the last phase1 self-test and SF's banner. `42 .` on
+mon:stdio echoes `42 ok` verbatim.
 
 Phase 1 is substantively complete on QEMU. Both headline bugs
 (spec 09 Bug 1 and Bug 2) are implemented and pass their spec-
@@ -31,7 +31,7 @@ client interface) are NOT started.
 
 A successful boot of `build/firmware-raw.bin` on
 `qemu-system-ppc -M pegasos2 -m 512 -bios ... -serial ... -display none`
-produces **2,350 bytes** of serial output containing, in order:
+produces **2,208 bytes** of serial output containing, in order:
 
 1. Banner with PVR (0x80020102 = MPC7447A) and DRAM round-trip OK.
 2. Console address and stack pointer.
@@ -60,11 +60,9 @@ produces **2,350 bytes** of serial output containing, in order:
    0xC00 trampoline saves all 32 GPRs + SPRs, the C stub
    syscall_dispatch() overwrites frame.gpr[3]=0xBABE, trampoline
    restores and rfi's; the r3 read after sc shows 0xBABE.
-9. Phase-1 hand-off banner (`Phase 1 complete. Handing off to
-   OpenFirmware...` + separator line).
-10. SmartFirmware banner: "Welcome...", "SmartFirmware(tm)
-    Copyright 1996-2001 by CodeGen, Inc.", "All Rights Reserved."
-11. `ok` prompt. Default boot idles here waiting for input;
+9. SmartFirmware banner: "Welcome...", "SmartFirmware(tm)
+   Copyright 1996-2001 by CodeGen, Inc.", "All Rights Reserved."
+10. `ok` prompt. Default boot idles here waiting for input;
     `-serial mon:stdio` with `42 .` piped in echoes `42 ok`.
 
 No `INTERNAL ERROR`, `UNHANDLED`, `Failed to emulate`, `STUCK
@@ -81,6 +79,7 @@ enabled in the default build.
 ## Commit history (as of this writing)
 
 ```
+52e1379  OF bring-up 8/N: retire phase1 hand-off scaffolding; trim syscall print
 8d018f5  OF bring-up 7/N: disable -DDEBUG; clean banner + ok prompt
 136b190  OF bring-up 6/N: failsafe_read is strictly non-blocking
 c646154  OF bring-up 5/N: interactive Forth REPL on serial via /failsafe
@@ -380,8 +379,8 @@ with OF behaviour until Commit 6+.
 | 5 | failsafe_read polled UART RX + NVRAM input/output-device=/failsafe | ✅ DONE -- install-console opens /failsafe (device_type=serial, SF-provided); `42 .` piped via `-serial mon:stdio` echoes `42 ok` after clearing the pager prompt with `f` |
 | 6 | failsafe_read strictly non-blocking per SF "serial" contract | ✅ DONE -- the Commit-5 "block on first byte" shape deadlocked key_down() which polls read on every paginated line. File-backed boot now reaches `ok` without a keystroke; the previous need to press `f` turned out to be compensating for this bug, not the banner pager |
 | 7 | Disable -DDEBUG, shed ~70 KiB of DPRINTF trace output | ✅ DONE -- default boot: 2,350 bytes verbatim banner + `ok` (was 72 KiB); mon:stdio `42 .` echoes `42 ok` without trace interleave |
-| 8..N | Tidy remaining diagnostic prints, retire the phase1 hand-off separator once the transition is reliable | Clean `ok` prompt appears directly after PCI enum / x86emu tests with no transitional decoration |
-| Final | Enter the interpret() read-eval loop | `ok` prompt appears on UART1; simple Forth like `42 .` echoes |
+| 8 | Retire phase1 hand-off scaffolding; trim the inner `[syscall ...]` diagnostic | ✅ DONE -- 2,350 → 2,208 bytes; phase1 tests flow directly into SF's banner with no transitional decoration |
+| Final | Enter the interpret() read-eval loop | ✅ DONE at Commit 5 -- `ok` prompt appears on UART1; simple Forth like `42 .` echoes |
 
 Decisions taken during the planning pass:
 - OF machdep lives at `machdep/pegasos2/of/`, not inside the
