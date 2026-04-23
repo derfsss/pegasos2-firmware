@@ -11,16 +11,33 @@ met -- clean banner + interactive REPL via `42 .` echoes `42 ok`
 on mon:stdio; file-backed default boot is 2,208 bytes with no
 trace noise).
 
-Post-OF milestone: **M48T59 NVRAM driver landed** (`22b5f68`).
-machdep/pegasos2/m48t59.{c,h} provides byte read/write via the
-VT8231 ISA I/O ports 0x74/0x75/0x77; SF's machine_nvram_*
-hooks are wired to the 1 KiB system partition (spec 08
-§"NVRAM partitioning", M48T59 offsets 0x0200..0x05FF). Correct
-per spec for real Pegasos II hardware; no-op on QEMU because
-pegasos2 doesn't instantiate an M48T59 (see SPEC-QUESTIONS.md
-Q4). Test matrix unchanged (default 2,208 / bridge 2,694 /
-EXCEPTION_TEST 1 panic / in-session setenv+printenv round-trip
-works via SF's in-memory cache).
+Post-OF milestones landed this session (plan: NVRAM → CI Tier-A →
+ExtInt → CI Tier-B → SMBus):
+
+1. **NVRAM M48T59** (`22b5f68`). machdep/pegasos2/m48t59.{c,h} +
+   SF `machine_nvram_*` wiring for the spec 08 system partition
+   (M48T59 offsets 0x0200..0x05FF). Correct per spec for real
+   hardware; no-op on QEMU because pegasos2 does not instantiate
+   an isa-m48t59 (SPEC-QUESTIONS.md Q4).
+
+2. **CI Tier-A** (`d74338b`, `707c4e4`, `420e3d0`). Added
+   upstream client.c to OF_SUBSET; wrote ci_handler() wrapper as
+   the spec 06 entry point; registered a `test-ci` Forth word
+   that builds a finddevice call-struct and invokes the
+   dispatcher. Observed on mon:stdio: `test-ci` prints
+   `ret=0 phandle=0x5134A8`.
+
+3. **ExtInt 0x500** (`7314443`, `0e32580`). QEMU source
+   inspection nailed down the MV64361 IC cascade (main-IC regs
+   at +0x004..0x024; VT8231 aggregated PIC → GPP31 → main cause
+   bit 59). E0 added register constants + a boot-time preflight
+   probe; E1 replaced the 0x500 panic stub with a real
+   dispatcher + handler-registration API (extint.c/h). No
+   consumer yet -- infrastructure lands, first real use comes
+   later per the planning decision.
+
+Default file-backed boot is 2,208 bytes with 0 forbidden strings
+across default + bridge + EXCEPTION_TEST.
 
 Phase 1 is substantively complete on QEMU. Both headline bugs
 (spec 09 Bug 1 and Bug 2) are implemented and pass their spec-
@@ -82,6 +99,12 @@ enabled in the default build.
 ## Commit history (as of this writing)
 
 ```
+0e32580  ExtInt E1: 0x500 dispatcher + handler-registration infrastructure
+7314443  ExtInt E0: MV64361 IC register map + preflight probe
+420e3d0  CI/3: synthetic client-interface smoke test via Forth word test-ci
+707c4e4  CI/2: ci_handler entry wrapper for IEEE-1275 client interface
+d74338b  CI/1: add client.c to OF_SUBSET for IEEE-1275 client interface
+d2af7ed  PROGRESS.md + SPEC-QUESTIONS.md: record M48T59 landing + QEMU gap
 22b5f68  M48T59 NVRAM driver + SF machine_nvram_* wiring (spec 08)
 52e1379  OF bring-up 8/N: retire phase1 hand-off scaffolding; trim syscall print
 8d018f5  OF bring-up 7/N: disable -DDEBUG; clean banner + ok prompt
