@@ -6,18 +6,21 @@ Read it after `CLAUDE.md` and `docs/START-HERE.md`.
 ## One-line status (2026-04-23)
 
 OF Forth runtime bring-up is in progress as a multi-commit
-series. Commits 1..8 of N are done: machdep.h scaffold, machdep.c
-stubs + of-test partial-link target, full SF subset + platform
-glue, OF reaching an `ok` prompt via failsafe, an **interactive
-Forth REPL on serial**, a bugfix making `failsafe_read` strictly
-non-blocking (Commit 6 -- previously a blocking first-byte read
-deadlocked SF's `key_down()` which is polled on every banner line
-when `paginate=TRUE`), **`-DDEBUG` disabled (Commit 7)**, and
-phase1 hand-off scaffolding retired (Commit 8). Default file-
-backed boot now produces a clean 2,208-byte serial trace ending
-in `ok` with no trace noise and no transitional decoration
-between the last phase1 self-test and SF's banner. `42 .` on
-mon:stdio echoes `42 ok` verbatim.
+series. Commits 1..8 of N are done (OF series exit criteria all
+met -- clean banner + interactive REPL via `42 .` echoes `42 ok`
+on mon:stdio; file-backed default boot is 2,208 bytes with no
+trace noise).
+
+Post-OF milestone: **M48T59 NVRAM driver landed** (`22b5f68`).
+machdep/pegasos2/m48t59.{c,h} provides byte read/write via the
+VT8231 ISA I/O ports 0x74/0x75/0x77; SF's machine_nvram_*
+hooks are wired to the 1 KiB system partition (spec 08
+§"NVRAM partitioning", M48T59 offsets 0x0200..0x05FF). Correct
+per spec for real Pegasos II hardware; no-op on QEMU because
+pegasos2 doesn't instantiate an M48T59 (see SPEC-QUESTIONS.md
+Q4). Test matrix unchanged (default 2,208 / bridge 2,694 /
+EXCEPTION_TEST 1 panic / in-session setenv+printenv round-trip
+works via SF's in-memory cache).
 
 Phase 1 is substantively complete on QEMU. Both headline bugs
 (spec 09 Bug 1 and Bug 2) are implemented and pass their spec-
@@ -79,6 +82,7 @@ enabled in the default build.
 ## Commit history (as of this writing)
 
 ```
+22b5f68  M48T59 NVRAM driver + SF machine_nvram_* wiring (spec 08)
 52e1379  OF bring-up 8/N: retire phase1 hand-off scaffolding; trim syscall print
 8d018f5  OF bring-up 7/N: disable -DDEBUG; clean banner + ok prompt
 136b190  OF bring-up 6/N: failsafe_read is strictly non-blocking

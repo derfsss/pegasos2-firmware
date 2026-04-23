@@ -106,3 +106,54 @@ PCI cfg 0x50 bit 2 is set.
   UART1 enable bit.
 - Whether the classic VIA "write 0x87 twice to unlock" magic is
   needed on real HW or a QEMU-emulation shortcut only.
+
+---
+
+## Q4. M48T59 NVRAM is not emulated on QEMU pegasos2 (spec 08)
+
+**Spec claim:** `docs/08-nvram.md` §"Tests" item 7:
+
+> Under QEMU, using `-drive if=mtd,file=nvram.bin,format=raw` (or
+> the machine's equivalent), the NVRAM state must persist across
+> emulator restarts.
+
+And `docs/08-nvram.md` §"M48T59 access" documents ISA I/O at
+ports 0x74 / 0x75 / 0x77 as the access path, implying the chip is
+reachable through the VT8231 ISA bus.
+
+**Observed:** QEMU 10.2's pegasos2 machine does NOT instantiate an
+isa-m48t59 device. `hw/ppc/pegasos.c` creates the MV64361 and
+VT8231 south bridge but leaves NVRAM to the RTAS hypercalls
+(`RTAS_NVRAM_FETCH` / `_STORE`) that VOF-using guests call. The
+only persistent state is the VT8231's built-in mc146818-compatible
+RTC (accessed by the QEMU property alias `rtc-time`).
+
+`qemu-system-ppc -M pegasos2 -drive if=mtd,file=... ,format=raw`
+errors out with "machine type does not support if=mtd,bus=0,unit=0".
+
+**Impl workaround:** Ship a correct-per-spec M48T59 driver
+(machdep/pegasos2/m48t59.c) and wire it into the SF
+`machine_nvram_*` hooks. Reads of the VT8231 ISA window at
+0x74/0x77 on QEMU land on unmapped I/O space and return 0, so the
+SF magic check (0xBE 0xEF) fails on every boot and SF falls back
+to compile-time defaults — same observable behaviour as the
+pre-driver stubs. The code path is only executable end-to-end on
+real Pegasos II hardware. In-session `setenv` + `printenv`
+round-trip works because SF caches NVRAM in `g_nvram_image` after
+the first load_nvram() call; cross-boot persistence requires real
+HW.
+
+**Suggested resolution:** Either:
+
+1. Update spec 08 §"Tests" item 7 to acknowledge that pegasos2 in
+   upstream QEMU has no M48T59 backing, and real-HW-only testing
+   is the current baseline for NVRAM.
+2. Sponsor a QEMU patch adding `isa-m48t59` to the pegasos2
+   machine at ISA base 0x74 (the device already exists as
+   `hw/rtc/m48t59-isa.c`; the wiring into `hw/ppc/pegasos.c`
+   would be ~5 lines). This would make cross-boot NVRAM
+   persistence testable without real hardware.
+
+Related downstream: the documented "`-drive if=mtd,...`" syntax
+would need a corresponding `drive_add` or `isa_register_ioport`
+wiring in the pegasos2 machine realize function.
