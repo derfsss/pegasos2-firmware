@@ -54,14 +54,18 @@
  * MALLOC_POOL is the total number of bytes handed to init_malloc().
  * SmartFirmware carves the Forth data memory (MEM_SIZE), xtok table,
  * capture buffer, device-tree node allocations, and Forth stacks out
- * of this pool. Our DRAM has 512 MiB of runway on -m 512, so we can
- * afford to be generous.
+ * of this pool.
  *
- * 4 MiB is enough for the bebox-class feature set (including a basic
- * device tree + one or two drivers) and leaves plenty of head-room
- * below the 1 MiB mark where our existing stack sits.
+ * Spec 07 §Load-address contract wants the heap "above 0x200000 but
+ * below 0x400000". With PEGASOS2_MEM_POOL_BASE = 0x00300000 that
+ * would leave only 1 MiB of heap room -- tried and SF OOMs before
+ * banner on the current footprint (needs ~2 MiB minimum). Staying
+ * at 4 MiB for now; the `heap-info` Forth word surfaces the
+ * violation for audit. A follow-up commit will relocate x86emu
+ * (currently at 0x00200000..0x002FFFFF) to free the 0x00200000..
+ * 0x003FFFFF range for a 2 MiB spec-compliant pool.
  */
-#define MALLOC_POOL        (4 * 1024 * 1024)    /* 4 MiB */
+#define MALLOC_POOL        (4 * 1024 * 1024)    /* 4 MiB (spec gap: see heap-info) */
 #define MEM_SIZE           (MALLOC_POOL / 2)    /* Forth data memory */
 
 #define STR_SIZE           256          /* OF spec minimum */

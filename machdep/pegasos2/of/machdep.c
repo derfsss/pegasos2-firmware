@@ -74,7 +74,7 @@ extern volatile uint32_t _ms_tick_count;
  *
  *   0x00000000..0x001FFFFF  exception vectors, stack, .data, .bss
  *   0x00200000..0x002FFFFF  x86 emulator buffer (X86EMU_MEM_PADDR)
- *   0x00300000..0x006FFFFF  OF malloc pool (init_malloc backing)
+ *   0x00300000..0x006FFFFF  OF malloc pool (init_malloc backing, 4 MiB)
  *   0x00700000..0x1FFFFFFF  OS-available DRAM (reported by /memory
  *                            through the available/claim allocator)
  *
@@ -83,6 +83,13 @@ extern volatile uint32_t _ms_tick_count;
  * total /memory extent (pool + OS-available), and g_machine_memory_used
  * is the amount install_memory's memory-claim reserves -- i.e. the
  * malloc pool itself, so the OS free list excludes it.
+ *
+ * Spec 07 §Load-address contract wants the heap "above 0x200000 but
+ * below 0x400000"; our 4 MiB pool extends to 0x006FFFFF which
+ * overlaps the default AOS-style kernel load address at 0x400000.
+ * The `heap-info` Forth word flags this gap. A follow-up will
+ * relocate x86emu to free the 0x200000..0x3FFFFF window for a 2 MiB
+ * spec-compliant pool.
  *
  * Value choices hard-coded to the 512 MiB QEMU DRAM until real HW
  * brings in a DDR-probe driver; machine_initialize() can be made

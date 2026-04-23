@@ -249,6 +249,33 @@ CC(f_set_bootargs)
 	return NO_ERROR;
 }
 
+/*
+ * `heap-info ( -- )` prints the SF malloc-pool bounds so a human can
+ * verify the spec 07 §Load-address contract at runtime: heap must
+ * stay above 0x200000 AND below 0x400000 so a default AOS-style
+ * kernel load at 0x400000 has a clear region. Values come from the
+ * machdep globals populated in machine_initialize().
+ */
+extern Byte *g_machine_memory;
+extern uInt  g_machine_memory_used;
+
+CC(f_heap_info)
+{
+	uInt base = (uInt)(uPtr)g_machine_memory;
+	uInt size = g_machine_memory_used;
+	uInt end  = base + size;
+
+	cprintf(e, "heap-info: pool 0x%X..0x%X (%d KiB)\n",
+	        (unsigned)base, (unsigned)(end - 1), (int)(size / 1024));
+
+	const char *status =
+	    (base >= 0x00200000u && end <= 0x00400000u)
+	      ? "OK (within spec 07 0x200000..0x400000 window)"
+	      : "OUT-OF-SPEC (clashes with spec 07 default-load 0x400000)";
+	cprintf(e, "heap-info: %s\n", status);
+	return NO_ERROR;
+}
+
 extern Retcode f_boot_kernel(Environ *e);
 extern Retcode f_test_boot(Environ *e);
 extern Retcode f_test_boot_bad(Environ *e);
@@ -264,6 +291,8 @@ static const Initentry init_pegasos2[] = {
 			"(--)  exercise boot-kernel hardening with 6 malformed ELF headers") },
 	{ (Byte *)"set-bootargs", f_set_bootargs, INVALID_FCODE, F_NONE, T_FUNC HELP(
 			"(addr len --)  publish string on /chosen/bootargs (spec 07 §AOS4)") },
+	{ (Byte *)"heap-info", f_heap_info, INVALID_FCODE, F_NONE, T_FUNC HELP(
+			"(--)  print SF malloc-pool bounds + spec 07 load-address compliance") },
 	{ NULL, NULL, INVALID_FCODE, F_NONE, T_FUNC HELP("") }
 };
 
