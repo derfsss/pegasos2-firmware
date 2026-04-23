@@ -184,37 +184,87 @@ produces a ~300 kHz external-interrupt storm (~1.4M vectors in
    QEMU's default PIC state: input is delivered via the polling
    fallback (no storm), but no interrupt-driven path.
 
-QEMU source (`hw/pci-host/mv64361.c mv64361_gpp_irq` line 857)
-contains a suspected bug: `!(val & 0xff << b)` with b=n/8
-computes `0xff << b` (small shift) instead of `0xff << (b*8)`
-(byte-selection shift). For our GPP31 / byte 3 case the
-condition masks bits 3..10 of val instead of 24..31, so the
-auto-clear of cause bit 59 on level-mode falling edge fires
-only coincidentally when bits 3..10 happen to be zero.
+Examining `hw/pci-host/mv64361.c mv64361_gpp_irq`, the level-mode
+auto-clear path at line 857 reads
+`!(val & 0xff << b)` which, because `<<` binds tighter than `&`,
+computes `val & (0xff << b)`. For GPP31 this becomes
+`val & (0xff << 3) = val & 0x7F8`. That masks bits 3..10 of val,
+NOT bits 24..31 as byte-selection would suggest. The clear only
+triggers when bits 3..10 happen to be zero.
+
+**QEMU is not the variable we get to change.** The original bPlan
+Pegasos2 BIOS boots on this exact QEMU model, so whatever QEMU
+does IS the target behaviour -- our replacement firmware must
+accommodate it, same as we must accommodate real hardware. The
+question is what register dance the original BIOS performs that
+avoids the storm. Clean-room rules (no binary inspection) mean we
+infer it from docs, QEMU source, and experimentation.
 
 **Impl workaround:** None committed. The ExtInt dispatcher
 infrastructure (commit `0e32580`, ExtInt E1) remains active but
 with no registered handler -- no interrupts route to CPU,
 polling in `failsafe_read` remains the sole input path and
-works. The commit sequence at `d13463e` is the last clean state.
+works. The commit sequence at `9129467` is the last clean state.
 
-**Suggested resolution:** Either:
+**Paths forward (not yet explored):**
 
-1. File the QEMU `mv64361_gpp_irq` bug upstream with a proposed
-   patch `val & (0xffu << (b * 8))` for line 857; verify the
-   fix unblocks edge-mode interrupts on the current cascade.
-2. Clarify in spec 02 whether the firmware is expected to
-   configure level-triggered GPP via the CUnit arbiter control
-   register on real HW; if so, a working level-mode path in
-   QEMU would be the target to file.
-3. Defer ExtInt-driven UART RX entirely: the polled path in
-   `failsafe_read` satisfies SF's "serial" contract and the
-   interactive REPL remains fully functional. ExtInt is still
-   valuable infrastructure for future handlers (timer ticks,
-   PCI MSI) that don't traverse the GPP cascade.
+1. **Level-mode via CUNIT_ARBITER_CONTROL_REG + careful timing.**
+   My attempt wrote CUNIT bit 10 then immediately unmasked GPP
+   and ei_install'd. Maybe the CUNIT write needs a barrier or
+   an explicit MV64361 read-back before it takes effect. Or the
+   order of (CUNIT write, GPP_INT_CAUSE clear, GPP_INT_MASK0 set,
+   ei_install) matters.
+2. **Explicit MAIN_INT_MASK gating.** Spec 02 line 197-200 names
+   both `MAIN_INT_MASK_LOW/HIGH` (which internal units can
+   interrupt) and `CPU_INT_MASK_LOW/HIGH` (which propagate to
+   CPU). QEMU exposes CPU_INT_MASK at 0x014/0x01C; MAIN_INT_MASK
+   isn't in mv643xx.h near those offsets. If there's a separate
+   main-mask layer, our config may leak interrupts that real HW
+   would gate.
+3. **Don't use UART RX as the first consumer.** A Forth REPL is
+   happy with polled input. The natural first consumer is either
+   a timer source (MV64361 timer 0 at cause bit 8) or an OS-side
+   event delivered once the spec-07 boot loader exists.
+4. **Polling remains fine.** SF's Annex A "serial" contract is
+   explicitly polled; interactive REPL round-trips work without
+   any ExtInt activation. The E1 dispatcher can stay dormant
+   until a consumer genuinely needs it.
 
 Related: any future first-consumer commit should plan for
 verifiable single-interrupt round-trip evidence before adding a
 ring-buffer consumer path -- e.g. a phase1 self-test that arms
 the cascade, injects one UART byte, verifies handler increments
 a counter exactly once.
+
+---
+
+## Q6. MV64361 IC register offsets: spec 02 vs QEMU
+
+**Spec claim:** `docs/02-memory-controller.md` line 189:
+
+> The MV64361's main interrupt controller lives at `@+0x0C68..0x0C74`.
+
+**Observed:** QEMU 10.2 emulates the main-IC at the offsets in
+`hw/pci-host/mv643xx.h`:
+
+- `MV64340_MAIN_INTERRUPT_CAUSE_LOW  = 0x004`
+- `MV64340_MAIN_INTERRUPT_CAUSE_HIGH = 0x00C`
+- `MV64340_CPU_INTERRUPT0_MASK_LOW   = 0x014`
+- `MV64340_CPU_INTERRUPT0_MASK_HIGH  = 0x01C`
+- `MV64340_CPU_INTERRUPT0_SELECT_CAUSE = 0x024`
+
+The spec's `@+0x0C68..0x0C74` range in QEMU's layout is
+unassigned; 0xC78/0xC7C are the PCI1 config-register pair. Writes
+to 0xC68..0xC74 would hit nothing on QEMU.
+
+**Impl workaround:** We use the QEMU offsets (0x004..0x024 via
+`MV_IC_MAIN_CAUSE_LOW`/etc. in `mv64361.h`). This matches the
+Marvell Discovery II Programmer's Reference, so real HW should
+agree with QEMU. The spec is likely either a typo or a stale
+reference to an earlier Discovery-series chip.
+
+**Suggested resolution:** Update `docs/02-memory-controller.md`
+§"Interrupt controller" to name the actual Discovery II register
+offsets (0x004..0x024 + the 0xF100..0xF11x GPP plane) or cite the
+Marvell Programmer's Reference by table number so future
+impl agents don't spend time searching for registers at 0xC68.
