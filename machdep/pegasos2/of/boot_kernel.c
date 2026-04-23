@@ -37,6 +37,23 @@
 #define ELF_TYPE_EXEC 2u
 #define ELF_MACHINE_PPC 20u
 
+/* Validation caps. Anything beyond these is either nonsense or a
+ * hostile/corrupt image; reject rather than hand garbage to the
+ * loader. Standard ELF32 has phentsz == 32 exactly; the cap lets a
+ * future image add fields without us coercing them to zero, but
+ * keeps the upper bound finite. phnum cap = 32 is generous (Linux
+ * PPC kernels ship ~4 PT_LOADs). */
+#define MIN_PHENTSZ   32u
+#define MAX_PHENTSZ   256u
+#define MAX_PHNUM     32u
+
+/* Flash mapping on QEMU (0xFFF00000..0xFFF7FFFF) and on real HW
+ * (0xFFF80000..0xFFFFFFFF) both fall inside this range; PT_LOAD
+ * into it is rejected to avoid write-amplification on the real flash
+ * part and to keep the firmware self-consistent during the handoff
+ * window. */
+#define FLASH_RANGE_START 0xFFF00000u
+
 extern void machine_jump_os(uInt entry, uInt ci_handler_addr);
 extern int  ci_handler(void *args);
 
@@ -63,6 +80,14 @@ be32(const uChar *p)
 {
 	return ((uInt)p[0] << 24) | ((uInt)p[1] << 16) |
 	       ((uInt)p[2] << 8)  | (uInt)p[3];
+}
+
+/* Wraparound-safe 32-bit addition. Returns non-zero on overflow. */
+static int
+u32_add_ovf(uInt a, uInt b, uInt *out)
+{
+	*out = a + b;
+	return (*out < a) ? 1 : 0;
 }
 
 /*
@@ -130,16 +155,77 @@ CC(f_boot_kernel)
 	/* e_entry at offset 24 (32-bit BE). */
 	uInt entry = be32(eh + 24);
 
-	/* Walk program headers (spec 07 says PT_LOAD) and memcpy each
-	 * loadable segment to its p_vaddr. We're the loader -- the bytes
-	 * at `addr` are the raw ELF file; PT_LOAD tells us where to
-	 * place them. Zero-fill from p_filesz to p_memsz for BSS. */
 	uInt phoff    = be32(eh + 28);   /* e_phoff   */
 	uInt phentsz  = be16(eh + 42);   /* e_phentsize */
 	uInt phnum    = be16(eh + 44);   /* e_phnum   */
 
 	if (phoff == 0 || phnum == 0) {
 		cprintf(e, "boot-kernel: no program headers\n");
+		return NO_ERROR;
+	}
+	if (phentsz < MIN_PHENTSZ || phentsz > MAX_PHENTSZ) {
+		cprintf(e, "boot-kernel: bad phentsz=%d\n", (int)phentsz);
+		return NO_ERROR;
+	}
+	if (phnum > MAX_PHNUM) {
+		cprintf(e, "boot-kernel: phnum=%d exceeds cap %d\n",
+		        (int)phnum, (int)MAX_PHNUM);
+		return NO_ERROR;
+	}
+	uInt pht_span;
+	if (u32_add_ovf(phoff, phnum * phentsz, &pht_span)) {
+		cprintf(e, "boot-kernel: phoff+phnum*phentsz overflow\n");
+		return NO_ERROR;
+	}
+
+	/* Two-pass load: validate all PT_LOADs before touching memory,
+	 * so a bad image can't partially-load. Also track whether e_entry
+	 * falls within any PT_LOAD's p_vaddr..p_vaddr+p_memsz range; an
+	 * entry point outside every loaded segment would jump to unmapped
+	 * or unloaded memory. */
+	int entry_in_phdr = 0;
+	for (uInt i = 0; i < phnum; i++) {
+		const uChar *ph   = eh + phoff + i * phentsz;
+		uInt p_type       = be32(ph + 0);
+		uInt p_offset     = be32(ph + 4);
+		uInt p_vaddr      = be32(ph + 8);
+		uInt p_filesz     = be32(ph + 16);
+		uInt p_memsz      = be32(ph + 20);
+
+		if (p_type != 1u)
+			continue;
+		if (p_memsz == 0)
+			continue;
+
+		if (p_filesz > p_memsz) {
+			cprintf(e, "boot-kernel: PT_LOAD #%d p_filesz %d > p_memsz %d\n",
+			        (int)i, (int)p_filesz, (int)p_memsz);
+			return NO_ERROR;
+		}
+		uInt src_end;
+		if (u32_add_ovf(p_offset, p_filesz, &src_end)) {
+			cprintf(e, "boot-kernel: PT_LOAD #%d p_offset+p_filesz overflow\n",
+			        (int)i);
+			return NO_ERROR;
+		}
+		uInt dst_end;
+		if (u32_add_ovf(p_vaddr, p_memsz, &dst_end)) {
+			cprintf(e, "boot-kernel: PT_LOAD #%d p_vaddr+p_memsz overflow\n",
+			        (int)i);
+			return NO_ERROR;
+		}
+		if (p_vaddr >= FLASH_RANGE_START || dst_end > FLASH_RANGE_START) {
+			cprintf(e, "boot-kernel: PT_LOAD #%d p_vaddr=0x%X overlaps flash\n",
+			        (int)i, (unsigned)p_vaddr);
+			return NO_ERROR;
+		}
+
+		if (entry >= p_vaddr && entry < dst_end)
+			entry_in_phdr = 1;
+	}
+	if (!entry_in_phdr) {
+		cprintf(e, "boot-kernel: e_entry 0x%X not in any PT_LOAD\n",
+		        (unsigned)entry);
 		return NO_ERROR;
 	}
 
@@ -151,7 +237,7 @@ CC(f_boot_kernel)
 		uInt p_filesz     = be32(ph + 16);
 		uInt p_memsz      = be32(ph + 20);
 
-		if (p_type != 1u)                /* PT_LOAD only */
+		if (p_type != 1u)
 			continue;
 		if (p_memsz == 0)
 			continue;
@@ -212,4 +298,147 @@ CC(f_test_boot)
 	 * code path a real caller would take. */
 	PUSH(e, (Cell)(uPtr)dst);
 	return f_boot_kernel(e);
+}
+
+/*
+ * `test-boot-bad ( -- )` exercises the hardening checks in
+ * boot-kernel. Six malformed ELF headers are built in a scratch
+ * buffer one at a time; each is fed to boot-kernel, which should
+ * reject and return. Returning is itself the pass signal: if any
+ * scenario slipped through validation it would either transfer to
+ * an empty/garbage image (firmware exits, observable as loss of the
+ * ok prompt) or trap (observable as !! PANIC). Reaching the final
+ * "6/6 PASS" cprintf means all six rejections fired.
+ */
+
+/* Scratch ELF scratch pad. 256 bytes covers an Ehdr (52) + two
+ * Phdrs (64) with slack. Lives in .bss. */
+static uChar bb_scratch[256];
+
+/*
+ * Fill bb_scratch with a syntactically valid minimal ELF32 PPC BE:
+ * one PT_LOAD covering e_entry. Each scenario below mutates exactly
+ * one field of this template so rejection diagnostics unambiguously
+ * map to the hardening check that fired.
+ */
+static void
+bb_build_valid(void)
+{
+	for (uInt i = 0; i < sizeof(bb_scratch); i++)
+		bb_scratch[i] = 0;
+
+	/* Ehdr at offset 0 */
+	bb_scratch[0] = ELF_MAGIC_0;
+	bb_scratch[1] = ELF_MAGIC_1;
+	bb_scratch[2] = ELF_MAGIC_2;
+	bb_scratch[3] = ELF_MAGIC_3;
+	bb_scratch[4] = ELF_CLASS_32;
+	bb_scratch[5] = ELF_DATA_MSB;
+	bb_scratch[6] = ELF_VERSION_1;
+	/* e_type = ET_EXEC at offset 16 (u16 BE) */
+	bb_scratch[17] = ELF_TYPE_EXEC;
+	/* e_machine = EM_PPC at offset 18 (u16 BE) */
+	bb_scratch[19] = ELF_MACHINE_PPC;
+	/* e_entry = 0x00900080 at offset 24 (u32 BE) */
+	bb_scratch[25] = 0x90;
+	bb_scratch[27] = 0x80;
+	/* e_phoff = 52 at offset 28 (u32 BE) */
+	bb_scratch[31] = 52;
+	/* e_phentsize = 32 at offset 42 (u16 BE) */
+	bb_scratch[43] = 32;
+	/* e_phnum = 1 at offset 44 (u16 BE) */
+	bb_scratch[45] = 1;
+
+	/* Phdr at offset 52 */
+	uChar *p = bb_scratch + 52;
+	/* p_type = PT_LOAD (1) */
+	p[3] = 1;
+	/* p_offset = 100 */
+	p[7] = 100;
+	/* p_vaddr = 0x00900080 (equal to e_entry) */
+	p[9] = 0x90;
+	p[11] = 0x80;
+	/* p_paddr = 0x00900080 */
+	p[13] = 0x90;
+	p[15] = 0x80;
+	/* p_filesz = 32 */
+	p[19] = 32;
+	/* p_memsz = 32 */
+	p[23] = 32;
+}
+
+CC(f_test_boot_bad)
+{
+	Int total = 0;
+	Int passed;
+
+	/* Pre-invoke pass count: each boot-kernel return bumps this. */
+	cprintf(e, "test-boot-bad: exercising 6 malformed-ELF scenarios\n");
+	passed = 0;
+
+	/* 1. Magic corrupted */
+	bb_build_valid();
+	bb_scratch[0] = 0x00;
+	cprintf(e, "  [1/6] bad-magic\n");
+	PUSH(e, (Cell)(uPtr)bb_scratch);
+	f_boot_kernel(e);
+	passed++; total++;
+
+	/* 2. phentsz too small (standard is 32; 8 is nonsense) */
+	bb_build_valid();
+	bb_scratch[42] = 0;
+	bb_scratch[43] = 8;
+	cprintf(e, "  [2/6] bad-phentsz\n");
+	PUSH(e, (Cell)(uPtr)bb_scratch);
+	f_boot_kernel(e);
+	passed++; total++;
+
+	/* 3. phnum above cap */
+	bb_build_valid();
+	bb_scratch[44] = 0;
+	bb_scratch[45] = 100;   /* 100 > MAX_PHNUM (32) */
+	cprintf(e, "  [3/6] oversized-phnum\n");
+	PUSH(e, (Cell)(uPtr)bb_scratch);
+	f_boot_kernel(e);
+	passed++; total++;
+
+	/* 4. p_filesz > p_memsz */
+	bb_build_valid();
+	{
+		uChar *p = bb_scratch + 52;
+		/* p_filesz = 0x1000, p_memsz = 32 */
+		p[16] = 0; p[17] = 0; p[18] = 0x10; p[19] = 0;
+		p[20] = 0; p[21] = 0; p[22] = 0;    p[23] = 32;
+	}
+	cprintf(e, "  [4/6] filesz-gt-memsz\n");
+	PUSH(e, (Cell)(uPtr)bb_scratch);
+	f_boot_kernel(e);
+	passed++; total++;
+
+	/* 5. PT_LOAD target inside flash range */
+	bb_build_valid();
+	{
+		uChar *p = bb_scratch + 52;
+		/* p_vaddr = 0xFFF80000 (inside flash) */
+		p[8]  = 0xFF; p[9]  = 0xF8; p[10] = 0x00; p[11] = 0x00;
+	}
+	cprintf(e, "  [5/6] load-to-flash\n");
+	PUSH(e, (Cell)(uPtr)bb_scratch);
+	f_boot_kernel(e);
+	passed++; total++;
+
+	/* 6. e_entry outside every PT_LOAD */
+	bb_build_valid();
+	/* e_entry = 0xABCD0000; PT_LOAD covers 0x00900080..0x009000A0 */
+	bb_scratch[24] = 0xAB;
+	bb_scratch[25] = 0xCD;
+	bb_scratch[26] = 0x00;
+	bb_scratch[27] = 0x00;
+	cprintf(e, "  [6/6] entry-outside-phdr\n");
+	PUSH(e, (Cell)(uPtr)bb_scratch);
+	f_boot_kernel(e);
+	passed++; total++;
+
+	cprintf(e, "test-boot-bad: %d/%d PASS\n", (int)passed, (int)total);
+	return NO_ERROR;
 }
