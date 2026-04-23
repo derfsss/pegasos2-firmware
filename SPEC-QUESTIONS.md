@@ -294,3 +294,154 @@ reference to an earlier Discovery-series chip.
 offsets (0x004..0x024 + the 0xF100..0xF11x GPP plane) or cite the
 Marvell Programmer's Reference by table number so future
 impl agents don't spend time searching for registers at 0xC68.
+
+---
+
+## Suggested replacement text for docs/02-memory-controller.md §"Interrupt controller"
+
+Consolidates the Q5 + Q6 findings into a drop-in rewrite of the
+current three-paragraph §"Interrupt controller" subsection of
+`docs/02-memory-controller.md`. Ready for the spec author to
+paste verbatim.
+
+> ## Interrupt controller
+>
+> The MV64361's main interrupt controller lives in the low
+> register bank at `@+0x004..0x024`. It exposes a 64-bit cause
+> register as two 32-bit halves plus per-CPU mask and
+> select-cause registers:
+>
+> | Offset | Name                         | Access | Notes |
+> |--------|------------------------------|--------|-------|
+> | 0x004  | MAIN_INTERRUPT_CAUSE_LOW     | RO     | Cause bits 0..31  |
+> | 0x00C  | MAIN_INTERRUPT_CAUSE_HIGH    | RO     | Cause bits 32..63 |
+> | 0x014  | CPU_INTERRUPT0_MASK_LOW      | RW     | 1 = route to CPU0 |
+> | 0x01C  | CPU_INTERRUPT0_MASK_HIGH     | RW     |                   |
+> | 0x024  | CPU_INTERRUPT0_SELECT_CAUSE  | RO     | Highest-priority pending |
+>
+> Each cause bit corresponds to an internal unit; the sources
+> most relevant to Pegasos2 firmware are:
+>
+> | Bit    | Source                                         |
+> |--------|------------------------------------------------|
+> | 8..11  | MV64361 timers 0..3                            |
+> | 12     | PCI0 INT aggregated (also via GPP 12..15)      |
+> | 16     | PCI1 INT aggregated (also via GPP 12..15)      |
+> | 56..59 | GPP plane, 8 pins per bit (P0_GPP0_7..P0_GPP24_31) |
+>
+> ### GPP (general-purpose pins) interrupt plane
+>
+> GPP 0..31 are cascade inputs that collapse into main-cause
+> bits 56..59 in blocks of eight pins each. On Pegasos2 these
+> are wired as:
+>
+> - GPP 12..15: PCI INTA..D, ORed across both host bridges, so
+>   any PCI interrupt rings this band (cause bit 57 =
+>   P0_GPP8_15).
+> - GPP 31: aggregated "intr" output from the VT8231
+>   southbridge's i8259 master PIC. Every ISA/legacy
+>   interrupt (UART1/2 on IRQ 4/3, IDE on 14/15, USB, AC'97,
+>   RTC, ...) arrives here (cause bit 59 = P0_GPP24_31).
+>
+> | Offset | Name                   | Access | Notes |
+> |--------|------------------------|--------|-------|
+> | 0xF108 | GPP_INTERRUPT_CAUSE    | RW     | Semantics depend on mode (below) |
+> | 0xF10C | GPP_INTERRUPT_MASK0    | RW     | Per-pin enable for CPU0 route    |
+> | 0xF110 | GPP_LEVEL_CONTROL      | RW     | Per-pin polarity inversion       |
+> | 0xF114 | GPP_INTERRUPT_MASK1    | RW     | Per-pin enable for CPU1 route    |
+> | 0xF300 | CUNIT_ARBITER_CONTROL  | RW     | Bit 10 = GPP plane level mode    |
+>
+> Bit 10 of the CUnit arbiter control register selects the GPP
+> plane's trigger mode:
+>
+> - 0 (reset default): edge-triggered. Cause bits latch on the
+>   rising edge of a pin and are cleared only by explicit writes
+>   to `GPP_INTERRUPT_CAUSE`.
+> - 1: level-triggered. Cause bits track the pin state and
+>   auto-clear when the source deasserts.
+>
+> **Firmware must select level mode (bit 10 = 1) before arming
+> any cascade input on GPP 31.** Under edge mode, an RX-ready
+> pulse from the UART latches cause 59 until the firmware
+> writes `GPP_INTERRUPT_CAUSE`; the clear window races the next
+> edge and the handler re-fires before the write lands,
+> producing an interrupt storm. Under level mode the cause
+> tracks the i8259 "intr" line and deasserts naturally once the
+> handler has drained the pending IRQ and EOI'd.
+>
+> ### PCI interrupt acknowledge (INTA-cycle equivalent)
+>
+> Unlike x86, PowerPC does not issue an INTA bus cycle on
+> exception entry. The MV64361 provides software-visible
+> INTA-virtual registers that stand in for that cycle:
+>
+> | Offset | Name                                      |
+> |--------|-------------------------------------------|
+> | 0xC34  | PCI_0_INTERRUPT_ACKNOWLEDGE_VIRTUAL       |
+> | 0xCB4  | PCI_1_INTERRUPT_ACKNOWLEDGE_VIRTUAL       |
+>
+> On Pegasos2 the VT8231 southbridge sits on PCI1, so the
+> relevant register is `PCI_1_INTERRUPT_ACKNOWLEDGE_VIRTUAL` at
+> `0xCB4`. Reading it, with the GPP plane in level mode AND the
+> cascade pin (GPP 31) asserted, invokes an INTA cycle on the
+> master i8259:
+>
+> - Sets ISR for the highest-priority pending IRQ.
+> - Clears the IRR bit for that IRQ (for edge-sensitive inputs).
+> - Re-evaluates the PIC's "intr" output.
+>
+> The returned value is `IRQ_BASE + irq_number` (default PC
+> convention, 0x20 + n). Firmware typically discards the return
+> value; the side effects are the point.
+>
+> The read is a no-op unless both gating conditions hold (level
+> mode on, pin asserted). In edge mode, or with the pin low, it
+> returns 0 without touching PIC state.
+>
+> ### Handler discipline for a cascaded IRQ
+>
+> A handler registered on main-cause bit 59 (VT8231 PIC
+> cascade) must perform three steps in order:
+>
+> 1. Read `PCI_1_INTERRUPT_ACKNOWLEDGE_VIRTUAL` (0xCB4). The
+>    returned value is usually discarded; the side effect
+>    (master i8259 ISR set, IRR cleared, "intr" re-evaluated)
+>    is what matters. Without this read the i8259 keeps "intr"
+>    asserted, GPP 31 stays high, main cause 59 remains set,
+>    and the CPU re-takes 0x500 indefinitely.
+> 2. Perform the device-specific acknowledge. For UART1, drain
+>    the RBR until `LSR[DR] = 0`. Each RBR read clears the
+>    UART's own interrupt output.
+> 3. Issue a non-specific EOI to the master i8259 by writing
+>    `0x20` to I/O port `0x20`. This clears the ISR bit set in
+>    step 1.
+>
+> Only with all three steps does the cascade deassert cleanly.
+>
+> ### Programming model
+>
+> For Pegasos2 the CPU is the master interrupt target. Phase 1
+> firmware programmes:
+>
+> - `CPU_INTERRUPT0_MASK_LOW` / `_HIGH`: which main-cause bits
+>   reach the CPU's external-interrupt line.
+> - `GPP_INTERRUPT_MASK0`: which GPP pins propagate up into the
+>   main-cause high word.
+> - `CUNIT_ARBITER_CONTROL` bit 10: set to 1 before arming any
+>   cascade input (mandatory for GPP 31).
+>
+> During Phase 1, mask all causes (CPU_INT_MASK = 0,
+> GPP_INT_MASK0 = 0). Phase 2 selectively unmasks as drivers
+> register handlers via the ExtInt dispatcher.
+
+---
+
+Applying this replacement also obsoletes the entries below from
+the current text:
+
+- The "`MAIN_INT_MASK_LOW` / `MAIN_INT_MASK_HIGH`" bullet in
+  the programming model -- QEMU (and the Marvell reference) do
+  not expose a separate main-mask layer; CPU_INT_MASK is the
+  only gate between cause bits and the CPU's interrupt line.
+- The "`@+0x0C68..0x0C74`" register range in the leading
+  paragraph -- actual offsets are `@+0x004..0x024` as tabled.
