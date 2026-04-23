@@ -56,17 +56,14 @@
  * capture buffer, device-tree node allocations, and Forth stacks out
  * of this pool.
  *
- * Spec 07 §Load-address contract wants the heap "above 0x200000 but
- * below 0x400000". With PEGASOS2_MEM_POOL_BASE = 0x00300000 that
- * would leave only 1 MiB of heap room -- tried and SF OOMs before
- * banner on the current footprint (needs ~2 MiB minimum). Staying
- * at 4 MiB for now; the `heap-info` Forth word surfaces the
- * violation for audit. A follow-up commit will relocate x86emu
- * (currently at 0x00200000..0x002FFFFF) to free the 0x00200000..
- * 0x003FFFFF range for a 2 MiB spec-compliant pool.
+ * Spec 07 §Load-address contract: heap lives "above 0x200000 but
+ * below 0x400000" so the default kernel load at 0x400000 has a clear
+ * region. We put the pool at 0x00200000 (right where x86emu used to
+ * be -- x86emu moved to 0x01000000) and size it at 2 MiB so it ends
+ * at 0x003FFFFF. Compliance verified by the `heap-info` Forth word.
  */
-#define MALLOC_POOL        (4 * 1024 * 1024)    /* 4 MiB (spec gap: see heap-info) */
-#define MEM_SIZE           (MALLOC_POOL / 2)    /* Forth data memory */
+#define MALLOC_POOL        (2 * 1024 * 1024)    /* 2 MiB */
+#define MEM_SIZE           (256 * 1024)         /* 256 KiB Forth user dict */
 
 #define STR_SIZE           256          /* OF spec minimum */
 #define STACK_SIZE         128          /* Forth data-stack depth */

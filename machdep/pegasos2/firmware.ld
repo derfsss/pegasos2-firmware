@@ -13,7 +13,9 @@
  *   0x00000000..0x00001FFF   exception vectors (copied from flash LMA at boot)
  *   0x00002000..0x000FFFFF   scratch + stack (stack grows down from 1 MiB)
  *   0x00100000..             .data then .bss
- *   0x00200000..0x002FFFFF   1 MiB x86 emulator buffer (carved out in C)
+ *   0x00200000..0x003FFFFF   2 MiB SF malloc pool (spec 07 §Load-address)
+ *   0x00400000..             default OS kernel load area
+ *   0x01000000..0x010FFFFF   1 MiB x86 emulator buffer (carved out in C)
  *   0xFFF00000..0xFFF7FFFF   flash: .text + .rodata + LMA(.data) + LMA(.vectors)
  */
 

@@ -18,10 +18,11 @@
  *  inputs for Commit 3 (expand the SF subset to satisfy them).
  *
  *  Notable decisions:
- *    * The memory pool starts at 0x00300000 (past our x86 emulator's
- *      1 MiB buffer at 0x00200000), 4 MiB long. Phase-1 stack at
- *      0x00100000 grows down, bss lives 0x00100000+, so 0x00300000+
- *      is safely unowned DRAM.
+ *    * The memory pool starts at 0x00200000 (right after firmware
+ *      bss/stack at 0x00100000..0x001FFFFF), 2 MiB long so it ends
+ *      at 0x003FFFFF -- spec 07 §Load-address compliant, leaving
+ *      0x00400000+ clear for OS kernel loads. The x86 emulator
+ *      buffer moved to 0x01000000 (16 MiB mark) to free this range.
  *    * machine_initialize() does NOT memcpy SF handlers over our
  *      already-installed exception vectors (unlike bebox). Our 0x100..
  *      0x1300 table with panic_dump / decrementer / syscall trampoline
@@ -73,9 +74,12 @@ extern volatile uint32_t _ms_tick_count;
  * Memory layout on QEMU -m 512 (other sizes TBD):
  *
  *   0x00000000..0x001FFFFF  exception vectors, stack, .data, .bss
- *   0x00200000..0x002FFFFF  x86 emulator buffer (X86EMU_MEM_PADDR)
- *   0x00300000..0x006FFFFF  OF malloc pool (init_malloc backing, 4 MiB)
- *   0x00700000..0x1FFFFFFF  OS-available DRAM (reported by /memory
+ *   0x00200000..0x003FFFFF  OF malloc pool (init_malloc backing, 2 MiB;
+ *                            spec 07 §Load-address compliant)
+ *   0x00400000..            default OS kernel load area per spec 07
+ *   0x01000000..0x010FFFFF  x86 emulator buffer (X86EMU_MEM_PADDR);
+ *                            only active during phase1, OS may reuse
+ *   rest of DRAM..0x1FFFFFFF  OS-available DRAM (reported by /memory
  *                            through the available/claim allocator)
  *
  * g_machine_memory points at the malloc-pool start and also serves as
@@ -84,18 +88,11 @@ extern volatile uint32_t _ms_tick_count;
  * is the amount install_memory's memory-claim reserves -- i.e. the
  * malloc pool itself, so the OS free list excludes it.
  *
- * Spec 07 §Load-address contract wants the heap "above 0x200000 but
- * below 0x400000"; our 4 MiB pool extends to 0x006FFFFF which
- * overlaps the default AOS-style kernel load address at 0x400000.
- * The `heap-info` Forth word flags this gap. A follow-up will
- * relocate x86emu to free the 0x200000..0x3FFFFF window for a 2 MiB
- * spec-compliant pool.
- *
  * Value choices hard-coded to the 512 MiB QEMU DRAM until real HW
  * brings in a DDR-probe driver; machine_initialize() can be made
  * size-adaptive later.
  */
-#define PEGASOS2_MEM_POOL_BASE   0x00300000u
+#define PEGASOS2_MEM_POOL_BASE   0x00200000u
 #define PEGASOS2_DRAM_TOP        0x20000000u     /* QEMU -m 512 ceiling */
 #define PEGASOS2_MEM_REPORT_SIZE (PEGASOS2_DRAM_TOP - PEGASOS2_MEM_POOL_BASE)
 

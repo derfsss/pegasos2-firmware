@@ -17,10 +17,15 @@
 #include <stdint.h>
 
 /* Where the emulator's 1 MiB of real-mode memory lives in our
- * address space. DRAM-backed, placed past the 1 MiB mark so it
- * does not collide with the stack (ceiling 0x00100000) or with
- * Phase-1 scratch at 0x1000. */
-#define X86EMU_MEM_PADDR   0x00200000u
+ * address space. DRAM-backed, placed above the 16 MiB mark so it
+ * sits clear of both the SF malloc pool (0x200000..0x3FFFFF per
+ * spec 07) and the default kernel load area (0x400000+). On real
+ * HW this range is inside DRAM on every production Pegasos II
+ * (minimum ship config was 128 MiB). Only the 1 MiB starting at
+ * X86EMU_MEM_PADDR is claimed; the surrounding DRAM is free for
+ * the OS -- but since x86emu only runs in phase1, the OS may
+ * reuse this region after handoff. */
+#define X86EMU_MEM_PADDR   0x01000000u
 #define X86EMU_MEM_SIZE    0x00100000u
 
 /* Pegasos2-visible linear pointer into the emulator's 1 MiB. */
