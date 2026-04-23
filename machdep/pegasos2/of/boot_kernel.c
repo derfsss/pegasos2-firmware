@@ -40,6 +40,11 @@
 extern void machine_jump_os(uInt entry, uInt ci_handler_addr);
 extern int  ci_handler(void *args);
 
+/* Embedded test kernel image, linked in from build/test_kernel.elf
+ * via objcopy. See Makefile $(TK_OBJ) rule. */
+extern uChar _test_kernel_start[];
+extern uChar _test_kernel_end[];
+
 /*
  * Read a big-endian 16 or 32-bit field from a byte pointer.
  * The PPC CPU is BE natively; a direct load would work, but
@@ -125,13 +130,47 @@ CC(f_boot_kernel)
 	/* e_entry at offset 24 (32-bit BE). */
 	uInt entry = be32(eh + 24);
 
+	/* Walk program headers (spec 07 says PT_LOAD) and memcpy each
+	 * loadable segment to its p_vaddr. We're the loader -- the bytes
+	 * at `addr` are the raw ELF file; PT_LOAD tells us where to
+	 * place them. Zero-fill from p_filesz to p_memsz for BSS. */
+	uInt phoff    = be32(eh + 28);   /* e_phoff   */
+	uInt phentsz  = be16(eh + 42);   /* e_phentsize */
+	uInt phnum    = be16(eh + 44);   /* e_phnum   */
+
+	if (phoff == 0 || phnum == 0) {
+		cprintf(e, "boot-kernel: no program headers\n");
+		return NO_ERROR;
+	}
+
+	for (uInt i = 0; i < phnum; i++) {
+		const uChar *ph   = eh + phoff + i * phentsz;
+		uInt p_type       = be32(ph + 0);
+		uInt p_offset     = be32(ph + 4);
+		uInt p_vaddr      = be32(ph + 8);
+		uInt p_filesz     = be32(ph + 16);
+		uInt p_memsz      = be32(ph + 20);
+
+		if (p_type != 1u)                /* PT_LOAD only */
+			continue;
+		if (p_memsz == 0)
+			continue;
+
+		uChar *dst = (uChar *)(uPtr)p_vaddr;
+		const uChar *src = eh + p_offset;
+
+		cprintf(e, "boot-kernel:   PT_LOAD #%d -> 0x%X (%d/%d)\n",
+		        (int)i, (unsigned)p_vaddr, (int)p_filesz, (int)p_memsz);
+
+		for (uInt j = 0; j < p_filesz; j++)
+			dst[j] = src[j];
+		for (uInt j = p_filesz; j < p_memsz; j++)
+			dst[j] = 0;
+	}
+
 	cprintf(e, "boot-kernel: ELF OK at 0x%X, e_entry=0x%X\n",
 	        (unsigned)addr, (unsigned)entry);
 	cprintf(e, "             transferring control...\n");
-
-	/* Belt: flush any pending UART output before we give up
-	 * control. SF's cprintf may have buffered through the failsafe
-	 * path; a quick EOL push wakes the polled tail. */
 
 	machine_jump_os(entry, (uInt)(uPtr)&ci_handler);
 
@@ -139,4 +178,38 @@ CC(f_boot_kernel)
 	 * OS image returned via blr or similar -- treat as error. */
 	cprintf(e, "boot-kernel: (!) image returned control; halting\n");
 	return NO_ERROR;
+}
+
+/*
+ * `test-boot ( -- )` is the smoke test for the full boot-kernel
+ * round trip: copies the built-in test-kernel ELF blob (linked at
+ * 0x00800000) from firmware .rodata to that address in DRAM,
+ * then calls the same logic as `boot-kernel`. If successful, the
+ * test kernel prints "KERNEL OK r5=XXXXXXXX" to UART1 and traps
+ * via `twi`, landing in panic_dump with vector 0x700.
+ *
+ * Expected serial output (abridged):
+ *     ok test-boot
+ *     test-boot: copying NNN bytes to 0x00800000
+ *     boot-kernel: ELF OK at 0x800000, e_entry=0x00800000
+ *                  transferring control...
+ *     KERNEL OK r5=00XXXXXX
+ *     !! PANIC: exception 0x00000700 (Program)
+ */
+CC(f_test_boot)
+{
+	Int  size = (Int)(_test_kernel_end - _test_kernel_start);
+	uChar *dst = (uChar *)0x00800000u;
+
+	cprintf(e, "test-boot: copying %d bytes to 0x%X\n",
+	        (int)size, (unsigned)(uPtr)dst);
+
+	for (Int i = 0; i < size; i++)
+		dst[i] = _test_kernel_start[i];
+
+	/* Push the load-addr and tail-invoke boot-kernel. Simpler
+	 * than duplicating the parse+jump; also exercises the same
+	 * code path a real caller would take. */
+	PUSH(e, (Cell)(uPtr)dst);
+	return f_boot_kernel(e);
 }

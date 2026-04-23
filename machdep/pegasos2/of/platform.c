@@ -181,12 +181,15 @@ CC(f_test_ci)
 }
 
 extern Retcode f_boot_kernel(Environ *e);
+extern Retcode f_test_boot(Environ *e);
 
 static const Initentry init_pegasos2[] = {
 	{ (Byte *)"test-ci", f_test_ci, INVALID_FCODE, F_NONE, T_FUNC HELP(
 			"(--)  invoke ci_handler with `finddevice \"/\"` and print result") },
 	{ (Byte *)"boot-kernel", f_boot_kernel, INVALID_FCODE, F_NONE, T_FUNC HELP(
 			"(load-addr --)  validate ELF at load-addr, transfer per spec 07") },
+	{ (Byte *)"test-boot", f_test_boot, INVALID_FCODE, F_NONE, T_FUNC HELP(
+			"(--)  copy built-in test kernel to 0x800000 and transfer") },
 	{ NULL, NULL, INVALID_FCODE, F_NONE, T_FUNC HELP("") }
 };
 

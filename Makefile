@@ -221,6 +221,38 @@ $(BUILD)/of_boot_kernel_asm.o: $(SF_MACHDEP)/boot_kernel.S | $(BUILD)
 # main() directly; without these objects the link would fail.
 OBJS += $(OF_SUBSET) $(OF_MACHDEP_OBJS)
 
+# -----------------------------------------------------------------
+# Spec-07 boot-kernel smoke-test image. A standalone PPC ELF linked
+# at 0x00800000 that writes "KERNEL OK r5=..." to UART1 and traps.
+# Built as a separate ELF, then objcopy'd into a .rodata blob so
+# it can be embedded in firmware.bin and copied to DRAM at run time
+# by the `test-boot` Forth word.
+TK      := test_kernel
+TK_ELF  := $(BUILD)/test_kernel.elf
+TK_OBJ  := $(BUILD)/test_kernel_blob.o
+
+$(BUILD)/test_kernel.o: $(TK)/kernel.S | $(BUILD)
+	$(CC) $(ASFLAGS) -c $< -o $@
+
+$(TK_ELF): $(BUILD)/test_kernel.o $(TK)/kernel.lds
+	$(CC) -nostdlib -static -Wl,-T,$(TK)/kernel.lds -o $@ $<
+
+# objcopy --prefix-sections puts our blob in .rodata as an "incbin"-
+# style object with symbols _binary_<name>_start/_end/_size. We
+# rename them via --redefine-sym for a cleaner API in C. The input
+# format "binary" means "treat the file as raw bytes"; the output
+# is a linkable ELF section. Target is powerpc:common 32-bit BE to
+# match our main build.
+$(TK_OBJ): $(TK_ELF)
+	$(OBJCOPY) -I binary -O elf32-powerpc -B powerpc:common \
+	    --rename-section .data=.rodata.test_kernel,alloc,load,readonly,data,contents \
+	    --redefine-sym _binary_$(BUILD)_test_kernel_elf_start=_test_kernel_start \
+	    --redefine-sym _binary_$(BUILD)_test_kernel_elf_end=_test_kernel_end \
+	    --redefine-sym _binary_$(BUILD)_test_kernel_elf_size=_test_kernel_size \
+	    $< $@
+
+OBJS += $(TK_OBJ)
+
 # Commit-2 acceptance target: partial-link the SF subset with
 # machdep.o and report remaining undefined symbols. Those are the
 # "not yet brought in" SF files; Commit 3 expands the subset to
