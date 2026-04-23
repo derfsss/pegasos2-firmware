@@ -62,7 +62,17 @@
 	VECTOR_STUB 0x200
 	VECTOR_STUB 0x300
 	VECTOR_STUB 0x400
-	VECTOR_STUB 0x500
+
+	/*
+	 * External interrupt (0x500): real handler. The trampoline
+	 * body lives out-of-line (>256-byte slot) at extint_trampoline
+	 * below. It saves a full register frame, calls ei_dispatch(),
+	 * restores, and rfi's. No ExtInt fires until ei_init() has run
+	 * and a consumer has registered a handler via ei_install().
+	 */
+	. = 0x500
+	b       extint_trampoline
+
 	VECTOR_STUB 0x600
 	VECTOR_STUB 0x700
 	VECTOR_STUB 0x800
@@ -369,6 +379,131 @@ syscall_trampoline:
 	.size syscall_trampoline, . - syscall_trampoline
 
 /*
+ * External-interrupt trampoline (0x500 out-of-line body).
+ *
+ * Entry: hardware has set SRR0 = interrupted PC, SRR1 = MSR at
+ * time of interrupt, MSR[EE]=0 on entry. All GPRs hold caller
+ * state.
+ *
+ * Shape mirrors syscall_trampoline: stash r3/r4 via SPRG0/1,
+ * build &_extint_frame, save all 32 GPRs + LR/CTR/XER/CR +
+ * SRR0/SRR1, call the C dispatcher, reload, rfi. Frame is 152
+ * bytes live (same 32*4 GPR area + 6 * 4 SPRs); .skip 256 for
+ * slack matches the syscall_frame convention.
+ */
+	.globl extint_trampoline
+	.type  extint_trampoline, @function
+extint_trampoline:
+	mtspr   272, r3                  /* SPRG0 = r3 */
+	mtspr   273, r4                  /* SPRG1 = r4 */
+
+	lis     r4, _extint_frame@ha
+	addi    r4, r4, _extint_frame@l
+
+	stw     r0,  0(r4)
+	stw     r1,  4(r4)
+	stw     r2,  8(r4)
+	mfspr   r3, 272                  /* saved r3 */
+	stw     r3, 12(r4)
+	mfspr   r3, 273                  /* saved r4 */
+	stw     r3, 16(r4)
+	stw     r5,  20(r4)
+	stw     r6,  24(r4)
+	stw     r7,  28(r4)
+	stw     r8,  32(r4)
+	stw     r9,  36(r4)
+	stw     r10, 40(r4)
+	stw     r11, 44(r4)
+	stw     r12, 48(r4)
+	stw     r13, 52(r4)
+	stw     r14, 56(r4)
+	stw     r15, 60(r4)
+	stw     r16, 64(r4)
+	stw     r17, 68(r4)
+	stw     r18, 72(r4)
+	stw     r19, 76(r4)
+	stw     r20, 80(r4)
+	stw     r21, 84(r4)
+	stw     r22, 88(r4)
+	stw     r23, 92(r4)
+	stw     r24, 96(r4)
+	stw     r25, 100(r4)
+	stw     r26, 104(r4)
+	stw     r27, 108(r4)
+	stw     r28, 112(r4)
+	stw     r29, 116(r4)
+	stw     r30, 120(r4)
+	stw     r31, 124(r4)
+
+	mflr    r3
+	stw     r3, 128(r4)
+	mfctr   r3
+	stw     r3, 132(r4)
+	mfxer   r3
+	stw     r3, 136(r4)
+	mfcr    r3
+	stw     r3, 140(r4)
+	mfspr   r3, 26                   /* SRR0 */
+	stw     r3, 144(r4)
+	mfspr   r3, 27                   /* SRR1 */
+	stw     r3, 148(r4)
+
+	bl      ei_dispatch
+
+	lis     r4, _extint_frame@ha
+	addi    r4, r4, _extint_frame@l
+
+	lwz     r3, 144(r4)
+	mtspr   26, r3                   /* SRR0 */
+	lwz     r3, 148(r4)
+	mtspr   27, r3                   /* SRR1 */
+	lwz     r3, 140(r4)
+	mtcr    r3
+	lwz     r3, 136(r4)
+	mtxer   r3
+	lwz     r3, 132(r4)
+	mtctr   r3
+	lwz     r3, 128(r4)
+	mtlr    r3
+
+	lwz     r31, 124(r4)
+	lwz     r30, 120(r4)
+	lwz     r29, 116(r4)
+	lwz     r28, 112(r4)
+	lwz     r27, 108(r4)
+	lwz     r26, 104(r4)
+	lwz     r25, 100(r4)
+	lwz     r24, 96(r4)
+	lwz     r23, 92(r4)
+	lwz     r22, 88(r4)
+	lwz     r21, 84(r4)
+	lwz     r20, 80(r4)
+	lwz     r19, 76(r4)
+	lwz     r18, 72(r4)
+	lwz     r17, 68(r4)
+	lwz     r16, 64(r4)
+	lwz     r15, 60(r4)
+	lwz     r14, 56(r4)
+	lwz     r13, 52(r4)
+	lwz     r12, 48(r4)
+	lwz     r11, 44(r4)
+	lwz     r10, 40(r4)
+	lwz     r9,  36(r4)
+	lwz     r8,  32(r4)
+	lwz     r7,  28(r4)
+	lwz     r6,  24(r4)
+	lwz     r5,  20(r4)
+	lwz     r0,  0(r4)
+	lwz     r1,  4(r4)
+	lwz     r2,  8(r4)
+	lwz     r3, 12(r4)
+	lwz     r4, 16(r4)
+
+	rfi
+
+	.size extint_trampoline, . - extint_trampoline
+
+/*
  * .bss allocations for the panic frame and the panic stack.
  * Declared here (rather than panic.c) so the asm side has stable
  * linker-visible symbols for `lis/addi`.
@@ -419,6 +554,15 @@ _dec_reload:
 	.align   4
 	.globl   _syscall_frame
 _syscall_frame:
+	.skip    256
+
+	/*
+	 * ExtInt frame used by extint_trampoline. Same layout as
+	 * _syscall_frame (full GPR + LR/CTR/XER/CR/SRR0/SRR1 save).
+	 */
+	.align   4
+	.globl   _extint_frame
+_extint_frame:
 	.skip    256
 
 	/* Silence a linker GNU-stack note for this asm file. */
