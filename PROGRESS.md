@@ -6,16 +6,18 @@ Read it after `CLAUDE.md` and `docs/START-HERE.md`.
 ## One-line status (2026-04-23)
 
 OF Forth runtime bring-up is in progress as a multi-commit
-series. Commits 1..5 of N are done: machdep.h scaffold, machdep.c
+series. Commits 1..7 of N are done: machdep.h scaffold, machdep.c
 stubs + of-test partial-link target, full SF subset + platform
-glue, OF reaching an `ok` prompt via failsafe, and now
-**interactive Forth REPL on serial -- typing `42 .` echoes `42 ok`**.
-install-console succeeds via `/failsafe` (SF's device_type=serial
-package), failsafe_read is backed by a polled UART1 RX, and the
-banner pagination can be advanced with `f`. Commit 6+ will
-disable DPRINTF (DEBUG flag), tidy diagnostic prints, and
-retire the phase1 hand-off banner once the transition is
-boring.
+glue, OF reaching an `ok` prompt via failsafe, an **interactive
+Forth REPL on serial**, a bugfix making `failsafe_read` strictly
+non-blocking (Commit 6 -- previously a blocking first-byte read
+deadlocked SF's `key_down()` which is polled on every banner line
+when `paginate=TRUE`), and **`-DDEBUG` disabled (Commit 7)**.
+Default file-backed boot now produces a clean 2,350-byte serial
+trace ending in `ok` with no trace noise. `42 .` on mon:stdio
+echoes `42 ok` verbatim (no DPRINTF interleave). Next commits:
+tidy remaining diagnostic prints and retire the phase1 hand-off
+separator once the transition is boring.
 
 Phase 1 is substantively complete on QEMU. Both headline bugs
 (spec 09 Bug 1 and Bug 2) are implemented and pass their spec-
@@ -29,7 +31,7 @@ client interface) are NOT started.
 
 A successful boot of `build/firmware-raw.bin` on
 `qemu-system-ppc -M pegasos2 -m 512 -bios ... -serial ... -display none`
-produces **2,073 bytes** of serial output containing, in order:
+produces **2,350 bytes** of serial output containing, in order:
 
 1. Banner with PVR (0x80020102 = MPC7447A) and DRAM round-trip OK.
 2. Console address and stack pointer.
@@ -58,7 +60,12 @@ produces **2,073 bytes** of serial output containing, in order:
    0xC00 trampoline saves all 32 GPRs + SPRs, the C stub
    syscall_dispatch() overwrites frame.gpr[3]=0xBABE, trampoline
    restores and rfi's; the r3 read after sc shows 0xBABE.
-9. Clean halt.
+9. Phase-1 hand-off banner (`Phase 1 complete. Handing off to
+   OpenFirmware...` + separator line).
+10. SmartFirmware banner: "Welcome...", "SmartFirmware(tm)
+    Copyright 1996-2001 by CodeGen, Inc.", "All Rights Reserved."
+11. `ok` prompt. Default boot idles here waiting for input;
+    `-serial mon:stdio` with `42 .` piped in echoes `42 ok`.
 
 No `INTERNAL ERROR`, `UNHANDLED`, `Failed to emulate`, `STUCK
 CS:IP`, or `!! PANIC` strings appear anywhere in the default
@@ -74,6 +81,8 @@ enabled in the default build.
 ## Commit history (as of this writing)
 
 ```
+8d018f5  OF bring-up 7/N: disable -DDEBUG; clean banner + ok prompt
+136b190  OF bring-up 6/N: failsafe_read is strictly non-blocking
 c646154  OF bring-up 5/N: interactive Forth REPL on serial via /failsafe
 f23d7ec  OF bring-up 4/N: OF runs from firmware.bin; reaches `ok` via failsafe
 1d9c910  OF bring-up 3/N: full SF subset + platform glue; of-test closes
@@ -369,7 +378,9 @@ with OF behaviour until Commit 6+.
 | 3 | Grow the SF subset (forth/funcs/exec/table/admin/control/cmdio/display/device/chosen/memory/root/cpu-ppc/packages/debug/nvedit/nvram + platform glue for init_list / install_list / g_nvram / machine_font / ppc_get_version) | `of-test` links with zero SF-side undefineds (only _ms_tick_count + uart_* remain, resolved at firmware link) |
 | 4 | Call into OF main() from phase1_c_main() | ✅ DONE -- default boot emits full SF banner + `ok` prompt via failsafe output; install-console errors due to missing /serial node; interpret() reads 0 bytes from failsafe_read and idles |
 | 5 | failsafe_read polled UART RX + NVRAM input/output-device=/failsafe | ✅ DONE -- install-console opens /failsafe (device_type=serial, SF-provided); `42 .` piped via `-serial mon:stdio` echoes `42 ok` after clearing the pager prompt with `f` |
-| 6..N | Disable DPRINTF (DEBUG off by default), tidy diagnostic prints, consider disabling pagination, retire the phase1 hand-off separator once the transition is reliable | Clean `ok` prompt appears without the interleaved trace lines or banner pager stalling input |
+| 6 | failsafe_read strictly non-blocking per SF "serial" contract | ✅ DONE -- the Commit-5 "block on first byte" shape deadlocked key_down() which polls read on every paginated line. File-backed boot now reaches `ok` without a keystroke; the previous need to press `f` turned out to be compensating for this bug, not the banner pager |
+| 7 | Disable -DDEBUG, shed ~70 KiB of DPRINTF trace output | ✅ DONE -- default boot: 2,350 bytes verbatim banner + `ok` (was 72 KiB); mon:stdio `42 .` echoes `42 ok` without trace interleave |
+| 8..N | Tidy remaining diagnostic prints, retire the phase1 hand-off separator once the transition is reliable | Clean `ok` prompt appears directly after PCI enum / x86emu tests with no transitional decoration |
 | Final | Enter the interpret() read-eval loop | `ok` prompt appears on UART1; simple Forth like `42 .` echoes |
 
 Decisions taken during the planning pass:
@@ -386,8 +397,9 @@ Decisions taken during the planning pass:
   machine_probe_read/write instead drive our panic path via a
   "probe active" flag that the DSI handler checks before
   dumping, advancing SRR0 and rfi'ing on match.
-- `DPRINTF` (via `#define DEBUG` in SF_CFLAGS) stays on during
-  bring-up.  Disable after the `ok` prompt is reliable.
+- `DPRINTF` (via `#define DEBUG` in SF_CFLAGS) was kept on from
+  Commit 1 through 6; Commit 7 turns it off now that `ok` is
+  reliable.  Re-enable only to diagnose a specific OF regression.
 
 ## Other near-term milestones (orthogonal to OF bring-up)
 
