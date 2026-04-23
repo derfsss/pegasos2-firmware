@@ -157,3 +157,64 @@ HW.
 Related downstream: the documented "`-drive if=mtd,...`" syntax
 would need a corresponding `drive_add` or `isa_register_ioport`
 wiring in the pegasos2 machine realize function.
+
+---
+
+## Q5. MV64361 ExtInt cascade produces storm on UART RX under QEMU
+
+**Spec claim:** `docs/02-memory-controller.md` §"Interrupt controller"
+and `docs/04-southbridge.md` §"Legacy devices" together imply a
+standard cascade: VT8231 i8259 → MV64361 main-IC cause bit →
+CPU external-interrupt line, ack'd via specific-EOI to i8259 and
+RBR read on the 16550 UART.
+
+**Observed (attempted in-session work, not committed):** A
+straightforward UART-RX-driven interrupt path on QEMU pegasos2
+produces a ~300 kHz external-interrupt storm (~1.4M vectors in
+4 seconds), SRR0 locked to the caller's `uart_poll_rx` at
+`mmio_read8(LSR)`. Attempted configurations:
+
+1. Edge-triggered GPP (MV64361 default): handler drains UART,
+   EOIs master i8259 (0x20 -> 0x20), then writes
+   `GPP_INT_CAUSE &= ~(1<<31)` to clear the latched main-IC
+   cause bit 59. QEMU storms immediately post-rfi.
+2. Level-triggered GPP via `CUNIT_ARBITER_CONTROL_REG` bit 10.
+   Same storm.
+3. Omitting the firmware i8259 init (ICW1..ICW4) and relying on
+   QEMU's default PIC state: input is delivered via the polling
+   fallback (no storm), but no interrupt-driven path.
+
+QEMU source (`hw/pci-host/mv64361.c mv64361_gpp_irq` line 857)
+contains a suspected bug: `!(val & 0xff << b)` with b=n/8
+computes `0xff << b` (small shift) instead of `0xff << (b*8)`
+(byte-selection shift). For our GPP31 / byte 3 case the
+condition masks bits 3..10 of val instead of 24..31, so the
+auto-clear of cause bit 59 on level-mode falling edge fires
+only coincidentally when bits 3..10 happen to be zero.
+
+**Impl workaround:** None committed. The ExtInt dispatcher
+infrastructure (commit `0e32580`, ExtInt E1) remains active but
+with no registered handler -- no interrupts route to CPU,
+polling in `failsafe_read` remains the sole input path and
+works. The commit sequence at `d13463e` is the last clean state.
+
+**Suggested resolution:** Either:
+
+1. File the QEMU `mv64361_gpp_irq` bug upstream with a proposed
+   patch `val & (0xffu << (b * 8))` for line 857; verify the
+   fix unblocks edge-mode interrupts on the current cascade.
+2. Clarify in spec 02 whether the firmware is expected to
+   configure level-triggered GPP via the CUnit arbiter control
+   register on real HW; if so, a working level-mode path in
+   QEMU would be the target to file.
+3. Defer ExtInt-driven UART RX entirely: the polled path in
+   `failsafe_read` satisfies SF's "serial" contract and the
+   interactive REPL remains fully functional. ExtInt is still
+   valuable infrastructure for future handlers (timer ticks,
+   PCI MSI) that don't traverse the GPP cascade.
+
+Related: any future first-consumer commit should plan for
+verifiable single-interrupt round-trip evidence before adding a
+ring-buffer consumer path -- e.g. a phase1 self-test that arms
+the cascade, injects one UART byte, verifies handler increments
+a counter exactly once.
