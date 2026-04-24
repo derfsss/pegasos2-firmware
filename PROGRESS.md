@@ -44,6 +44,26 @@ ExtInt → CI Tier-B → SMBus):
    both a 1-arg/1-ret and a 4-arg/1-ret dispatch shape. Returns
    phandle of /chosen and the decoded stdout ihandle.
 
+4b. **CI `boot` service + OS-context callback** (`ba17b84`,
+    `35d0833`). Closed the spec-06 loop on QEMU:
+    - install_client_services added to install_list so SF
+      registers /openprom/client-services and client_interface()
+      dispatches via execute_static_method_name instead of the
+      linear fallback scan (CI/5).
+    - test_kernel/kernel.S extended with a "milliseconds" CI
+      callback via the r5 pointer after KERNEL OK. Proves the
+      firmware's CI handler is reachable from OS context (not
+      just firmware Forth) -- observed ` CI.ms=XXXXXXXX` with a
+      plausible uptime value before the twi halt.
+    - `test-ci-boot ( addr len -- )` Forth word invokes
+      ci_handler with {"boot", bootspec} and reports the return.
+      Failure path (`" nosuchdev" test-ci-boot`) returns -1 and
+      cleanly continues at ok. Success path (`" hd:0 /test.elf"
+      test-ci-boot` with RDB image) transfers control through
+      f_client_boot -> boot_load -> open-dev -> FFS2 -> ELF
+      loader -> machine_jump_os -> test kernel -> r5 callback.
+      Full spec-06 + spec-07 round-trip in one command.
+
 5. **Spec-07 boot loader** (`b25795c`..`b2699a6`). Multi-commit
    slice of the spec-07 boot path that proves the full register
    handoff end-to-end on QEMU and gets the firmware spec-compliant
@@ -371,6 +391,25 @@ enabled in the default build.
 ```
 9d324f7  Arc FS-B Block 1: Amiga Rigid Disk Block partition parser
 57f0039  Arc FS-A: FAT12/16/32 + ext2 + DOS MBR partitions
+9fa3456  Block 7/N: NVRAM boot defaults -- bare `boot` + auto-boot work
+c6a1fc5  Block 6/N: boot cd /test.elf end-to-end -- full spec-07 flow works
+817aade  Block 5/N: /aliases/cd + /aliases/hd + test-iso Makefile target
+73ca06c  Block 4/N: ISO9660 filesystem + test-iso-ls lists AOS4 CD root
+287c96a  Block 3/N: block reads via deblocker -- CD001 at LBA 16 verified
+a79e0f7  Block 2/N: VT8231 PCI IDE driver attaches + IDENTIFY works
+35d0833  CI/6: test-ci-boot Forth word exercises spec-06 boot service
+ba17b84  CI/5: install_client_services + test-kernel CI callback
+b93c907  PROGRESS.md: record Arc FS-B B3/B4/B5 (DirCache + SFS + PFS3) completion
+6a35c51  Arc FS-B Block 5: PFS3 readonly reader (PFS\1 / PFS\2 / AFS\1)
+f83b8a3  Arc FS-B Block 4: SmartFileSystem readonly reader (SFS\0, SFS\2)
+83323de  Arc FS-B Block 3: DirCache DOS\4/\5 + generalize mkrdb.py
+fba8df7  PROGRESS.md: record Arc FS-B B2 (Amiga FFS2 reader) completion
+dc4a0ba  Arc FS-B Block 2: Amiga OFS/FFS/LNFS readonly reader (FFS2)
+ef6542e  PROGRESS.md: record Arc FS-B B1 (RDB parser) completion
+9d324f7  Arc FS-B Block 1: Amiga Rigid Disk Block partition parser
+7966cac  PROGRESS.md: record Arc FS-A (FAT + ext2) completion
+57f0039  Arc FS-A: FAT12/16/32 + ext2 + DOS MBR partitions
+91eb4ff  PROGRESS.md: record Block 7/N + post-M7 FS expansion roadmap
 9fa3456  Block 7/N: NVRAM boot defaults -- bare `boot` + auto-boot work
 c6a1fc5  Block 6/N: boot cd /test.elf end-to-end -- full spec-07 flow works
 817aade  Block 5/N: /aliases/cd + /aliases/hd + test-iso Makefile target
