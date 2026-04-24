@@ -22,15 +22,32 @@
  *  g_filesys[] -- filesystem driver registry consumed by fs/fs.c's *
  *  file_system() dispatcher. Iterated by file_system on each of    *
  *  disklbl.c's load / list-files paths until one entry accepts     *
- *  (returns NO_ERROR or R_END). For the Pegasos2 AOS4 boot path    *
- *  we only need iso9660; ext2 will appear alongside in M8 for HD   *
- *  boot. Terminator must be NULL -- file_system walks until it     *
- *  hits one, even if entries above are good.                       *
+ *  (returns NO_ERROR or R_END) or all return E_NO_FILESYS.         *
+ *                                                                  *
+ *  Ordering rules:                                                 *
+ *   - Partition parsers (g_dos_partition) go FIRST. They read the  *
+ *     disk's MBR / disklabel and, if one is found, recursively     *
+ *     invoke file_system on each partition's slice. If no MBR      *
+ *     signature, they return E_NO_FILESYS and the iteration        *
+ *     continues with whole-disk FS readers.                        *
+ *   - iso9660 next because CDs never have an MBR wrapper.          *
+ *   - FAT + ext2 cover whole-disk (unpartitioned) images too;      *
+ *     order between them doesn't matter (each magic-checks).       *
+ *                                                                  *
+ *  Arc FS-B (Amiga) will add &g_amiga_rdb (partition) and the      *
+ *  Amiga filesystem readers (FFS2 first) to this list. NULL        *
+ *  terminator required.                                            *
  * --------------------------------------------------------------- */
-extern Filesys g_iso9660_fs;
+extern Filesys g_dos_partition;    /* upstream/fs/dospart.c */
+extern Filesys g_iso9660_fs;       /* upstream/fs/iso9660.c */
+extern Filesys g_dos_fat;          /* upstream/fs/dosfat.c */
+extern Filesys g_linux_ext2fs;     /* upstream/fs/ext2fs.c */
 
 Filesys *g_filesys[] = {
+	&g_dos_partition,
 	&g_iso9660_fs,
+	&g_dos_fat,
+	&g_linux_ext2fs,
 	NULL
 };
 

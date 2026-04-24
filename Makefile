@@ -200,7 +200,10 @@ OF_SUBSET := \
     $(BUILD)/of_disklbl.o \
     $(BUILD)/of_fs.o \
     $(BUILD)/of_iso9660.o \
-    $(BUILD)/of_exe.o
+    $(BUILD)/of_exe.o \
+    $(BUILD)/of_dospart.o \
+    $(BUILD)/of_dosfat.o \
+    $(BUILD)/of_ext2fs.o
 
 # isa/atadisk.c: generic ATA/ATAPI disk driver pulled in Block 2/N.
 # Compiled with an extra include path for ../scsi/scsi.h (which its
@@ -240,6 +243,24 @@ $(BUILD)/of_iso9660.o: $(SF)/fs/iso9660.c | $(BUILD)
 # our machdep-supplied g_exec_list[]. Lives in exe/ subdir; its
 # "exe.h" include resolves via source-dir lookup.
 $(BUILD)/of_exe.o: $(SF)/exe/exe.c | $(BUILD)
+	$(CC) $(SF_CFLAGS) -c $< -o $@
+
+# Arc FS-A: PC filesystems.
+#   fs/dospart.c  -- MBR partition table parser (Filesys that
+#                    recurses into partitions for downstream FS probing)
+#   fs/dosfat.c   -- FAT12/16/32 reader with LFN support
+#   fs/ext2fs.c   -- Linux ext2 reader
+# All live in fs/ subdir; quoted includes resolve via source-dir
+# lookup. No extra -I needed. bsdpart.c (BSD disklabel) is NOT
+# pulled -- no BSD target.
+$(BUILD)/of_dospart.o: $(SF)/fs/dospart.c | $(BUILD)
+	$(CC) $(SF_CFLAGS) -c $< -o $@
+
+$(BUILD)/of_dosfat.o: $(SF)/fs/dosfat.c | $(BUILD)
+	$(CC) $(SF_CFLAGS) -include $(SF_MACHDEP)/dosfat_compat.h \
+	    -c $< -o $@
+
+$(BUILD)/of_ext2fs.o: $(SF)/fs/ext2fs.c | $(BUILD)
 	$(CC) $(SF_CFLAGS) -c $< -o $@
 
 .PHONY: of-sf-subset
