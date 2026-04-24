@@ -482,25 +482,29 @@ amiga_ffs(Environ *e, Filesys_action what, Instance *disk,
 	(void)start_unused;
 	if (size < BSIZE) return E_BLOCKSIZE;
 
-	/* We need the partition size to compute root-block position.
-	 * file_system passes `loc` = partition start but not size;
-	 * we derive size from the DosType-match instead. Without a
-	 * size hint, use a heuristic: scan from a guess in [loc +
-	 * 880 * BSIZE] down to find the root.
-	 *
-	 * For the RDB path, amiga_rdb's recursive file_system call
-	 * gives loc = part_loc, and we probe a set of typical root
-	 * block positions. For M1 we just try the floppy default
-	 * (block 880) first, then approximated midpoints of common
-	 * partition sizes. A caller that happens to pass a partition
-	 * smaller than 880 blocks (~440 KiB) would fail, which is
-	 * acceptable -- any realistic Amiga install CD or HD is
-	 * 10x+ that size. */
+	/* Quick reject via boot-block DosType. For RDB-partitioned
+	 * disks, amiga_rdb recurses into file_system on each
+	 * partition slice; we only want to match partitions whose
+	 * boot block starts with 'DOS\N'. A partition formatted as
+	 * SFS or PFS would otherwise send our probe loop chasing
+	 * block offsets past the partition end, producing a torrent
+	 * of ATA timeout errors. */
+	uByte bootbuf[BSIZE];
+	uInt dt = 0;
+	Retcode r0 = read_block(e, disk, loc, 0, bootbuf);
+	if (r0 != NO_ERROR)
+		return E_NO_FILESYS;
+	uInt boot_id = be32(bootbuf + 0x00);
+	if ((boot_id & 0xFFFFFF00u) != 0x444F5300u)
+		return E_NO_FILESYS;
+	dt = boot_id & 0xFFu;
+	if (dt > 7)
+		return E_NO_FILESYS;
 
-	/* If we haven't cached volume state for this disk+loc, try
-	 * to locate the root block by probing the candidate block
-	 * positions: 880 (floppy default), and midpoints at powers
-	 * of two from 1 KiB up to 2 GiB worth of partition size. */
+	/* Probe likely root-block positions. 880 (DD floppy default)
+	 * first, then midpoints of larger partitions. Stop on the
+	 * first read failure so we don't chase offsets past the disk
+	 * end when the partition is small. */
 	static const uInt probe_mids[] = {
 		880,            /* DD floppy standard */
 		1760,           /* HD floppy */
@@ -513,12 +517,11 @@ amiga_ffs(Environ *e, Filesys_action what, Instance *disk,
 		0
 	};
 
-	/* Try each candidate until one presents a valid root block. */
 	int found = 0;
 	uInt picked_root = 0;
 	for (uInt i = 0; probe_mids[i] != 0; i++) {
 		Retcode r = read_block(e, disk, loc, probe_mids[i], buf);
-		if (r != NO_ERROR) continue;
+		if (r != NO_ERROR) break;    /* past disk end -- stop */
 		if (be32(buf + 0x00) != (uInt)T_HEADER) continue;
 		if ((Int)be32(buf + OFF_SEC_TYPE) != ST_ROOT) continue;
 		if (!checksum_ok(buf)) continue;
@@ -528,21 +531,6 @@ amiga_ffs(Environ *e, Filesys_action what, Instance *disk,
 	}
 	if (!found)
 		return E_NO_FILESYS;
-
-	/* Inspect the partition's DosType. For an RDB partition, the
-	 * type was already checked by amiga_rdb's traversal and we're
-	 * invoked only on partitions where the FS should match. Still,
-	 * double-check by reading into our cached state. For a
-	 * whole-disk probe (no RDB), peek at the boot block (block
-	 * 0) and grab its DosType. */
-	uByte bootbuf[BSIZE];
-	uInt dt = 0;
-	Retcode r = read_block(e, disk, loc, 0, bootbuf);
-	if (r == NO_ERROR) {
-		uInt boot_id = be32(bootbuf + 0x00);
-		if ((boot_id & 0xFFFFFF00u) == 0x444F5300u)
-			dt = boot_id & 0xFFu;
-	}
 
 	/* We don't know the partition size at this call site; use a
 	 * very generous default and rely on the root-block probe to

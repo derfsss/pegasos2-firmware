@@ -35,6 +35,8 @@ MAGIC_RDSK   = 0x5244534B    # 'RDSK'
 MAGIC_PART   = 0x50415254    # 'PART'
 DOSTYPE_FFS2 = 0x44_4F_53_07 # 'DOS\7' -- FFS + Intl + LongName ("FFS2")
 DOSTYPE_FFSDC = 0x44_4F_53_05 # 'DOS\5' -- FFS + DirCache
+DOSTYPE_SFS0 = 0x53_46_53_00 # 'SFS\0' -- classic SmartFileSystem
+DOSTYPE_SFS2 = 0x53_46_53_02 # 'SFS\2' -- AmigaOS 4 SFS
 
 # --- Amiga FFS on-disk constants (mirrors machdep/pegasos2/of/amiga_ffs.c) ---
 T_HEADER     = 2
@@ -347,17 +349,200 @@ def build_filesystem(payload, partition_blocks, dostype=DOSTYPE_FFS2):
     return blocks
 
 
+# --- SmartFileSystem image builders ----------------------------------------
+#
+# Layout inside the partition (512-byte blocks):
+#   block 0   boot block -- DosType 'SFS\<n>' only
+#   block 1   primary root block (fsRootBlock)
+#   block 2   root ObjectContainer ('OBJC') -- one fsObject for test.elf
+#   block 3   extent B+-tree root/leaf ('BNDC') -- single fsExtentBNode
+#   block 4+  data blocks (raw payload, one contiguous extent)
+#   block N-1 secondary root block (older sequence number)
+#
+# Checksum: sum of all 32-bit BE longwords in the block == 0. We patch
+# the checksum slot (offset 4 of the 12-byte bheader) after filling
+# every other field.
+
+SFS_OBJC_MAGIC = 0x4F424A43   # 'OBJC'
+SFS_BNDC_MAGIC = 0x424E4443   # 'BNDC'
+SFS_STRUCTURE_VERSION = 3
+
+SFS_ROOT_BLK     = 1
+SFS_ROOTOBJC_BLK = 2
+SFS_EXTBT_BLK    = 3
+SFS_DATA_START   = 4
+SFS_ROOTNODE     = 1
+
+
+def sfs_checksum(block_bytes):
+    """Stored checksum makes the sum of all 32-bit BE longwords
+    equal zero. Caller writes 0 at offset 4 (bheader.checksum)
+    before computing."""
+    assert len(block_bytes) == BLOCK_SIZE
+    s = 0
+    for i in range(0, BLOCK_SIZE, 4):
+        s = (s + struct.unpack(">I", block_bytes[i:i+4])[0]) & 0xFFFFFFFF
+    return (-s) & 0xFFFFFFFF
+
+
+def build_sfs_boot_block(dostype):
+    blk = bytearray(BLOCK_SIZE)
+    struct.pack_into(">I", blk, 0, dostype)
+    return bytes(blk)
+
+
+def build_sfs_root_block(ownblock, seqno, totalblocks,
+                          rootobjc, extent_bt):
+    blk = bytearray(BLOCK_SIZE)
+    # bheader: id may be anything (our reader doesn't require a
+    # specific root-block magic). ownblock at +8.
+    struct.pack_into(">I", blk, 8, ownblock)
+    # version + sequence number
+    struct.pack_into(">H", blk, 12, SFS_STRUCTURE_VERSION)
+    struct.pack_into(">H", blk, 14, seqno)
+    # bits (case insensitive by default: 0)
+    blk[20] = 0
+    # totalblocks, blocksize
+    struct.pack_into(">I", blk, 48, totalblocks)
+    struct.pack_into(">I", blk, 52, BLOCK_SIZE)
+    # rootobjectcontainer, extentbnoderoot
+    struct.pack_into(">I", blk, 104, rootobjc)
+    struct.pack_into(">I", blk, 108, extent_bt)
+    # checksum
+    struct.pack_into(">I", blk, 4, sfs_checksum(bytes(blk)))
+    return bytes(blk)
+
+
+def build_sfs_root_objc(ownblock, file_name, file_data, file_size,
+                         file_node):
+    """Root ObjectContainer with a single file entry. Emits:
+        bheader(12) + parent(4) + next(4) + prev(4) + fsObject(var)
+       fsObject fixed header is 25 bytes, followed by NUL-terminated
+       name and NUL-terminated comment (empty here)."""
+    blk = bytearray(BLOCK_SIZE)
+    # bheader
+    struct.pack_into(">I", blk, 0, SFS_OBJC_MAGIC)
+    struct.pack_into(">I", blk, 8, ownblock)
+    # parent = ROOTNODE (by convention)
+    struct.pack_into(">I", blk, 12, SFS_ROOTNODE)
+    struct.pack_into(">I", blk, 16, 0)   # next OC
+    struct.pack_into(">I", blk, 20, 0)   # previous OC
+
+    # First fsObject at +24.
+    off = 24
+    struct.pack_into(">H", blk, off + 0, 0)          # owneruid
+    struct.pack_into(">H", blk, off + 2, 0)          # ownergid
+    struct.pack_into(">I", blk, off + 4, file_node)  # objectnode
+    struct.pack_into(">I", blk, off + 8, 0x0F)       # protection
+    struct.pack_into(">I", blk, off + 12, file_data) # file.data = first-extent key
+    struct.pack_into(">I", blk, off + 16, file_size) # file.size
+    struct.pack_into(">I", blk, off + 20, 0)         # datemodified
+    blk[off + 24] = 0                                # bits = 0 (file, not dir, no link)
+
+    # Name (NUL-terminated)
+    name_bytes = file_name.encode('ascii') + b'\x00'
+    blk[off + 25 : off + 25 + len(name_bytes)] = name_bytes
+    # Comment (empty, just NUL)
+    comment_off = off + 25 + len(name_bytes)
+    blk[comment_off] = 0
+
+    # Next fsObject's objectnode field (at the 2-byte-aligned next
+    # offset) stays zero -- our reader stops when it sees node==0.
+
+    struct.pack_into(">I", blk, 4, sfs_checksum(bytes(blk)))
+    return bytes(blk)
+
+
+def build_sfs_extent_tree(ownblock, extents):
+    """extents: list of (key, blocks). Produces a single BNodeContainer
+    leaf. For the test image we only need one extent."""
+    blk = bytearray(BLOCK_SIZE)
+    struct.pack_into(">I", blk, 0, SFS_BNDC_MAGIC)
+    struct.pack_into(">I", blk, 8, ownblock)
+    # BTreeContainer at +12
+    struct.pack_into(">H", blk, 12, len(extents))    # nodecount
+    blk[14] = 1                                      # isleaf
+    blk[15] = 14                                     # nodesize = sizeof(fsExtentBNode)
+
+    for i, (key, nblocks) in enumerate(extents):
+        bn_off = 16 + i * 14
+        struct.pack_into(">I", blk, bn_off + 0, key)         # be_key
+        struct.pack_into(">I", blk, bn_off + 4, 0)           # be_next
+        struct.pack_into(">I", blk, bn_off + 8, 0)           # be_prev
+        struct.pack_into(">H", blk, bn_off + 12, nblocks)    # be_blocks
+
+    struct.pack_into(">I", blk, 4, sfs_checksum(bytes(blk)))
+    return bytes(blk)
+
+
+def build_sfs_filesystem(payload, partition_blocks, dostype=DOSTYPE_SFS2):
+    """Return dict {block_idx: 512 bytes} describing a minimal SFS
+    filesystem containing one file 'test.elf'=payload. payload is
+    laid out as a single contiguous extent starting at SFS_DATA_START."""
+    assert (dostype & 0xFFFFFF00) == 0x53465300, "dostype must be 'SFS\\N'"
+    blocks = {}
+
+    num_data = (len(payload) + BLOCK_SIZE - 1) // BLOCK_SIZE
+    assert num_data <= 0xFFFF, "single-extent blocks-count exceeds UWORD"
+
+    last_data_blk = SFS_DATA_START + num_data - 1
+    secondary_root = partition_blocks - 1
+    assert last_data_blk < secondary_root, \
+        f"SFS layout needs block {last_data_blk} < secondary root {secondary_root}"
+
+    blocks[0] = build_sfs_boot_block(dostype)
+
+    blocks[SFS_ROOT_BLK] = build_sfs_root_block(
+        ownblock=SFS_ROOT_BLK, seqno=1,
+        totalblocks=partition_blocks,
+        rootobjc=SFS_ROOTOBJC_BLK, extent_bt=SFS_EXTBT_BLK,
+    )
+
+    blocks[SFS_ROOTOBJC_BLK] = build_sfs_root_objc(
+        ownblock=SFS_ROOTOBJC_BLK,
+        file_name="test.elf",
+        file_data=SFS_DATA_START,
+        file_size=len(payload),
+        file_node=3,
+    )
+
+    blocks[SFS_EXTBT_BLK] = build_sfs_extent_tree(
+        ownblock=SFS_EXTBT_BLK,
+        extents=[(SFS_DATA_START, num_data)],
+    )
+
+    for i in range(num_data):
+        start = i * BLOCK_SIZE
+        chunk = payload[start:start + BLOCK_SIZE]
+        if len(chunk) < BLOCK_SIZE:
+            chunk = chunk + b"\x00" * (BLOCK_SIZE - len(chunk))
+        blocks[SFS_DATA_START + i] = chunk
+
+    # Secondary root block with older sequence number (our reader
+    # only consults the primary, but a real SFS would cross-check).
+    blocks[secondary_root] = build_sfs_root_block(
+        ownblock=secondary_root, seqno=0,
+        totalblocks=partition_blocks,
+        rootobjc=SFS_ROOTOBJC_BLK, extent_bt=SFS_EXTBT_BLK,
+    )
+
+    return blocks
+
+
 def main():
     args = sys.argv[1:]
     if not args:
-        print("usage: mkrdb.py OUT.img [BLOCKS] [--elf path/to/test_kernel.elf] "
-              "[--dostype N]   (N = 0..7 for DOS\\N, default 7 = FFS2)",
+        print("usage: mkrdb.py OUT.img [BLOCKS] [--elf ELF] "
+              "[--dostype N]   (N = 0..7 for DOS\\N, default 7 = FFS2)\n"
+              "                                [--sfs N]       "
+              "(N = 0 or 2 for SFS\\N)",
               file=sys.stderr)
         sys.exit(1)
 
     out = args.pop(0)
     elf_path = None
     dt_low = 7   # default DOS\7 (FFS2)
+    sfs_ver = None
     remaining = []
     it = iter(args)
     for a in it:
@@ -366,19 +551,27 @@ def main():
         elif a == "--dostype":
             dt_low = int(next(it))
             assert 0 <= dt_low <= 7, "dostype must be 0..7"
+        elif a == "--sfs":
+            sfs_ver = int(next(it))
+            assert sfs_ver in (0, 2), "--sfs must be 0 or 2"
         else:
             remaining.append(a)
     blocks = int(remaining[0]) if remaining else DEFAULT_BLKS
 
-    dostype = 0x44_4F_53_00 | dt_low   # 'DOS\<N>'
-    is_lnfs = (dt_low == 6 or dt_low == 7)
+    if sfs_ver is not None:
+        dostype = 0x53_46_53_00 | sfs_ver        # 'SFS\<N>'
+        label   = f"SFS\\{sfs_ver}"
+    else:
+        dostype = 0x44_4F_53_00 | dt_low         # 'DOS\<N>'
+        label   = f"DOS\\{dt_low}"
+
+    is_lnfs = (sfs_ver is None and (dt_low == 6 or dt_low == 7))
 
     if elf_path:
         with open(elf_path, "rb") as fh:
             payload = fh.read()
     else:
-        # Smoke-test placeholder: one block of "PEG2\0..." so the
-        # RDB parser sees *something* (file header + one data block).
+        # Smoke-test placeholder
         payload = b"PEG2" + b"\x00" * (BLOCK_SIZE - 4)
 
     rdb  = build_rigid_disk_block(blocks)
@@ -392,10 +585,14 @@ def main():
     part_offset       = 2 * bytes_per_cyl
     partition_blocks  = (total_cyls - 2) * SURFACES * BLKS_PER_TRK
 
-    fs_blocks = build_filesystem(payload, partition_blocks, dostype=dostype)
+    if sfs_ver is not None:
+        fs_blocks = build_sfs_filesystem(payload, partition_blocks,
+                                           dostype=dostype)
+    else:
+        fs_blocks = build_filesystem(payload, partition_blocks,
+                                      dostype=dostype)
 
     with open(out, "wb") as f:
-        # Zero-fill to total size first, then patch in the non-zero blocks.
         f.write(b"\x00" * (blocks * BLOCK_SIZE))
         f.seek(RDB_BLOCK * BLOCK_SIZE);  f.write(rdb)
         f.seek(PART_BLOCK * BLOCK_SIZE); f.write(part)
@@ -406,7 +603,7 @@ def main():
 
     print(f"wrote {out}: {blocks} blocks = {blocks * BLOCK_SIZE // 1024} KiB")
     print(f"  RDSK @ block 0, PART @ block 1 "
-          f"(DH0, DOS\\{dt_low} {'LNFS' if is_lnfs else ''})")
+          f"(DH0, {label} {'LNFS' if is_lnfs else ''})")
     print(f"  partition: cyls 2..{total_cyls-1}, {partition_blocks} blocks "
           f"at disk offset 0x{part_offset:X}")
     if elf_path:

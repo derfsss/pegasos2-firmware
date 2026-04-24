@@ -282,7 +282,8 @@ OF_MACHDEP_OBJS := \
     $(BUILD)/of_pci_tree.o \
     $(BUILD)/of_ide_driver.o \
     $(BUILD)/of_amiga_rdb.o \
-    $(BUILD)/of_amiga_ffs.o
+    $(BUILD)/of_amiga_ffs.o \
+    $(BUILD)/of_amiga_sfs.o
 
 $(BUILD)/of_platform.o: $(SF_MACHDEP)/platform.c | $(BUILD)
 	$(CC) $(SF_CFLAGS) -I$(MACHDEP) -I$(SF)/fs -c $< -o $@
@@ -316,6 +317,16 @@ $(BUILD)/of_amiga_rdb.o: $(SF_MACHDEP)/amiga_rdb.c | $(BUILD)
 # Laurent Clévy adflib FAQ + Olaf Barthel DCFS/LNFS Low Level Data
 # Structures page; no GPL code copied. Needs -I$(SF)/fs for fs.h.
 $(BUILD)/of_amiga_ffs.o: $(SF_MACHDEP)/amiga_ffs.c | $(BUILD)
+	$(CC) $(SF_CFLAGS) -I$(SF)/fs -c $< -o $@
+
+# Arc FS-B, Block 4: SmartFileSystem readonly reader. Covers SFS\0
+# (classic Amiga) and SFS\2 (AOS4). On-disk layout identical; SFS\2
+# adds softlinks which we recognise-and-skip. Clean-room from the
+# AROS LGPL source's blockstructure.h / nodes.h / btreenodes.h /
+# objects.h / bitmap.h header files, which describe the on-disk
+# format via struct offsets (format spec, not code). Linear dir
+# walk + extent B+-tree traversal for file data.
+$(BUILD)/of_amiga_sfs.o: $(SF_MACHDEP)/amiga_sfs.c | $(BUILD)
 	$(CC) $(SF_CFLAGS) -I$(SF)/fs -c $< -o $@
 
 # Append OF to the firmware link target. phase1_c_main() calls SF's
