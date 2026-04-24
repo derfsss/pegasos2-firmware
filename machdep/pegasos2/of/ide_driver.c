@@ -582,3 +582,71 @@ close_and_return:
 	(void)execute_word(e, "close-dev");
 	return NO_ERROR;
 }
+
+/*
+ * test-iso-ls (--)
+ *
+ * Finds the first ATAPI CD, open-devs it, then invokes the
+ * `list-files` method on the disk instance with "/" as the
+ * directory argument. disklbl's f_disklbl_list_files
+ * (disklbl.c:124) passes that through file_system(FS_LIST, ...)
+ * which iterates g_filesys[] and calls iso9660's action with
+ * FS_LIST, which walks the ISO root directory and prints one
+ * line per entry:
+ *     "[NAME]"     for subdirectories
+ *     "SIZE NAME"  for files
+ * plus a one-line header:
+ *     "ISO-9660 filesystem:  System-ID: "..."  Volume-ID: "..."
+ *
+ * Success line (printed after the listing):
+ *     "test-iso-ls: OK listed ISO9660 root on <path>"
+ * Failure line:
+ *     "test-iso-ls: FAIL <reason>"
+ */
+CC(f_test_iso_ls)
+{
+	Instance *inst = NULL;
+	Retcode r;
+	Byte pathbuf[STR_SIZE];
+
+	Package *cd = find_first_cd(e);
+	if (cd == NULL) {
+		cprintf(e, "test-iso-ls: FAIL no ATAPI drive attached\n");
+		return NO_ERROR;
+	}
+	if (!get_device_name(e, cd, pathbuf)) {
+		cprintf(e, "test-iso-ls: FAIL could not get device name\n");
+		return NO_ERROR;
+	}
+
+	PUSHP(e, pathbuf);
+	PUSH(e, (Cell)strlen((char *)pathbuf));
+	r = execute_word(e, "open-dev");
+	if (r != NO_ERROR) {
+		cprintf(e, "test-iso-ls: FAIL open-dev rc=%d\n", (Int)r);
+		return NO_ERROR;
+	}
+	POPT(e, inst, Instance *);
+	if (inst == NULL) {
+		cprintf(e, "test-iso-ls: FAIL open returned NULL\n");
+		return NO_ERROR;
+	}
+
+	/* list-files (args alen --) -- disklbl's f_disklbl_list_files
+	 * inserted into the disk package's dict by disklbl's open.
+	 * Pass "/" as the directory path; disklbl passes it to
+	 * file_system(FS_LIST, ...) which fires iso9660's FS_LIST. */
+	PUSHP(e, (Byte *)"/");
+	PUSH(e, (Cell)1);
+	r = execute_method_name(e, inst, (Byte *)"list-files", CSTR);
+	if (r != NO_ERROR) {
+		cprintf(e, "test-iso-ls: FAIL list-files rc=%d\n", (Int)r);
+	} else {
+		cprintf(e, "test-iso-ls: OK listed ISO9660 root on %s\n",
+			(char *)pathbuf);
+	}
+
+	PUSHP(e, inst);
+	(void)execute_word(e, "close-dev");
+	return NO_ERROR;
+}

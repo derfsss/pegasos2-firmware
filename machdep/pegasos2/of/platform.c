@@ -19,12 +19,19 @@
 
 /* --------------------------------------------------------------- *
  *  g_filesys[] -- filesystem driver registry consumed by fs/fs.c's *
- *  file_system() dispatcher. Empty until M4 registers ISO9660.     *
- *  disklbl.c calls file_system() from its load / list-files Forth  *
- *  methods; those will return E_NO_FILESYS here, which is correct  *
- *  behaviour for a Pegasos2 that has no FS drivers installed yet.  *
+ *  file_system() dispatcher. Iterated by file_system on each of    *
+ *  disklbl.c's load / list-files paths until one entry accepts     *
+ *  (returns NO_ERROR or R_END). For the Pegasos2 AOS4 boot path    *
+ *  we only need iso9660; ext2 will appear alongside in M8 for HD   *
+ *  boot. Terminator must be NULL -- file_system walks until it     *
+ *  hits one, even if entries above are good.                       *
  * --------------------------------------------------------------- */
-Filesys *g_filesys[] = { NULL };
+extern Filesys g_iso9660_fs;
+
+Filesys *g_filesys[] = {
+	&g_iso9660_fs,
+	NULL
+};
 
 /* --------------------------------------------------------------- *
  *  Default NVRAM contents (g_nvram)                                 *
@@ -293,6 +300,7 @@ extern Retcode f_test_boot_bad(Environ *e);
 extern Retcode f_ls_pci(Environ *e);
 extern Retcode f_test_ide_probe(Environ *e);
 extern Retcode f_test_read_block(Environ *e);
+extern Retcode f_test_iso_ls(Environ *e);
 
 static const Initentry init_pegasos2[] = {
 	{ (Byte *)"test-ci", f_test_ci, INVALID_FCODE, F_NONE, T_FUNC HELP(
@@ -313,6 +321,8 @@ static const Initentry init_pegasos2[] = {
 			"(--)  print each IDE disk/cd discovered by install_ide_driver") },
 	{ (Byte *)"test-read-block", f_test_read_block, INVALID_FCODE, F_NONE, T_FUNC HELP(
 			"(--)  open cd@0,0, read LBA 16, verify ISO9660 CD001 signature") },
+	{ (Byte *)"test-iso-ls", f_test_iso_ls, INVALID_FCODE, F_NONE, T_FUNC HELP(
+			"(--)  list the root directory of the first ATAPI ISO9660 volume") },
 	{ NULL, NULL, INVALID_FCODE, F_NONE, T_FUNC HELP("") }
 };
 
@@ -409,6 +419,7 @@ extern const Initentry init_nvedit[];
 extern const Initentry init_other[];
 extern const Initentry init_device[];
 extern const Initentry init_debug[];
+extern const Initentry init_filesystem[];  /* fs/fs.c: $list-files, list-files */
 
 const Initentry *init_list[] = {
 	init_funcs,
@@ -421,6 +432,7 @@ const Initentry *init_list[] = {
 	init_other,
 	init_device,
 	init_debug,
+	init_filesystem,
 	init_pegasos2,
 	NULL
 };

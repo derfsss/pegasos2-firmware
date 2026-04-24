@@ -198,7 +198,8 @@ OF_SUBSET := \
     $(BUILD)/of_atadisk.o \
     $(BUILD)/of_deblock.o \
     $(BUILD)/of_disklbl.o \
-    $(BUILD)/of_fs.o
+    $(BUILD)/of_fs.o \
+    $(BUILD)/of_iso9660.o
 
 # isa/atadisk.c: generic ATA/ATAPI disk driver pulled in Block 2/N.
 # Compiled with an extra include path for ../scsi/scsi.h (which its
@@ -224,6 +225,13 @@ $(BUILD)/of_disklbl.o: $(SF)/disklbl.c | $(BUILD)
 # compiler's current-source-file include search. Other callers
 # (like disklbl.c) include via -I$(SF)/fs.
 $(BUILD)/of_fs.o: $(SF)/fs/fs.c | $(BUILD)
+	$(CC) $(SF_CFLAGS) -c $< -o $@
+
+# Block 4/N: fs/iso9660.c (ISO9660 + Joliet reader). Exports
+# Filesys g_iso9660_fs; we add &g_iso9660_fs to g_filesys[] in
+# platform.c so disklbl/fs.c's file_system() dispatch routes
+# FS_PROBE/FS_LIST/FS_LOAD to it.
+$(BUILD)/of_iso9660.o: $(SF)/fs/iso9660.c | $(BUILD)
 	$(CC) $(SF_CFLAGS) -c $< -o $@
 
 .PHONY: of-sf-subset
