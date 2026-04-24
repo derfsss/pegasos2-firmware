@@ -335,10 +335,33 @@ amiga_rdb(Environ *e, Filesys_action what, Instance *disk,
 
 		if (selected_partition == partition_idx) {
 			if (what == FS_LIST || what == FS_LOAD) {
+				/*
+				 * Strip trailing whitespace-delimited args
+				 * before handing to the FS reader. The
+				 * official AOS4 boot syntax is
+				 *   boot hd:0 amigaboot.of bootdevice=DHY
+				 * SF's f_disklbl_load concatenates the
+				 * filename + bootargs into a single
+				 * loadargs string, so by the time we get
+				 * here `path` looks like
+				 *   "/amigaboot.of bootdevice=DHY".
+				 * The FS reader needs the bare path. The
+				 * full args still reach /chosen/bootargs
+				 * via SF's separate stash, so the OS sees
+				 * "bootdevice=DHY" downstream. */
+				static Byte path_clean[256];
+				int pc_n = 0;
+				while (pc_n < (int)sizeof(path_clean) - 1 &&
+				       path[pc_n] != 0 &&
+				       path[pc_n] != ' ' &&
+				       path[pc_n] != '\t')
+					pc_n++;
+				memcpy(path_clean, path, pc_n);
+				path_clean[pc_n] = 0;
 				/* Recurse into file_system on the partition
 				 * slice. Future FFS/SFS/PFS3 readers will
 				 * match on the DosType and return success. */
-				ret = file_system(e, what, disk, path,
+				ret = file_system(e, what, disk, path_clean,
 					loc + p_start, p_start,
 					buf, BLOCK_SIZE_DEFAULT,
 					retbuf, val);
