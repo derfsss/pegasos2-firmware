@@ -275,6 +275,26 @@ CC(machine_go)
 	cprintf(e, "machine_go: e_entry=0x%X r1=0x%X; transferring...\n",
 		(unsigned)e->entrypoint, (unsigned)stack_top);
 
+	/* Echo /chosen/bootpath + /chosen/bootargs so we can verify
+	 * what the loaded image will see. The OS reads these via
+	 * `getprop /chosen bootargs ...` shortly after entry and uses
+	 * them to choose an OS root device, kernel commandline, etc.
+	 * (Spec 07 §AOS4 lists `bootdevice=` as the canonical AOS4
+	 * argument that selects which RDB partition to boot from.) */
+	{
+		Byte *prop_val = NULL;
+		Int   prop_len = 0;
+		if (prop_get_str(e->chosen->props, "bootpath", CSTR,
+				 &prop_val, &prop_len) == NO_ERROR && prop_val)
+			cprintf(e, "  /chosen/bootpath = \"%S\"\n",
+				prop_val, prop_len);
+		prop_val = NULL; prop_len = 0;
+		if (prop_get_str(e->chosen->props, "bootargs", CSTR,
+				 &prop_val, &prop_len) == NO_ERROR && prop_val)
+			cprintf(e, "  /chosen/bootargs = \"%S\"\n",
+				prop_val, prop_len);
+	}
+
 	machine_jump_os((uInt)e->entrypoint,
 			(uInt)(uPtr)&ci_handler, stack_top);
 

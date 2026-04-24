@@ -85,6 +85,33 @@ static uByte            ci_stack[CI_STACK_SIZE] __attribute__((aligned(16)));
  */
 int ci_dispatch(void *args);
 
+#ifdef CI_TRACE_LIMITED
+/* Trace each unique service name once, plus all calls until we
+ * have seen N distinct services. After that, only print
+ * 'unusual' return codes (errors). Keeps the log compact while
+ * still showing the ABI shape amigaboot.of expects. */
+#define CI_TRACE_DISTINCT_LIMIT 64
+static int       g_ci_trace_counter;
+static char      g_ci_seen[CI_TRACE_DISTINCT_LIMIT][24];
+static int       g_ci_seen_n;
+
+static int
+ci_seen_or_remember(const char *name)
+{
+	for (int i = 0; i < g_ci_seen_n; i++)
+		if (strcmp(g_ci_seen[i], name) == 0)
+			return 1;
+	if (g_ci_seen_n < CI_TRACE_DISTINCT_LIMIT) {
+		int j = 0;
+		while (j < (int)sizeof(g_ci_seen[0]) - 1 && name[j])
+			g_ci_seen[g_ci_seen_n][j] = name[j], j++;
+		g_ci_seen[g_ci_seen_n][j] = 0;
+		g_ci_seen_n++;
+	}
+	return 0;
+}
+#endif
+
 int
 ci_dispatch(void *args)
 {
@@ -143,6 +170,45 @@ ci_dispatch(void *args)
 		cprintf(g_e, "  [WATCH 0x20F290 CHANGED 0x%X -> 0x%X]",
 		        (unsigned)before, (unsigned)after);
 	cprintf(g_e, "\n");
+	return rc;
+#elif defined(CI_TRACE_LIMITED)
+	Cell *a = (Cell *)args;
+	uInt svc_ptr = (uInt)a[0];
+	uInt nargs   = (uInt)a[1];
+	uInt nrets   = (uInt)a[2];
+
+	char name[24] = "<unmapped>";
+	int  in_dram  = (svc_ptr < 0x10000000u);
+	int  in_flash = (svc_ptr >= 0xF0000000u);
+	if ((in_dram || in_flash) && svc_ptr != 0) {
+		const uByte *p = (const uByte *)(uPtr)svc_ptr;
+		int j = 0;
+		while (j < (int)sizeof(name) - 1 &&
+		       p[j] >= 0x20 && p[j] < 0x7Fu)
+			name[j] = p[j], j++;
+		name[j] = 0;
+	}
+	int seen = ci_seen_or_remember(name);
+	int call_n = ++g_ci_trace_counter;
+
+	int rc = (int)client_interface((Cell *)args);
+
+	/* Print on: first occurrence, every N-th call for very
+	 * common services, or any negative rc (= error). */
+	int is_error = (rc != 0);
+	int print_it = !seen || is_error || (call_n <= 30);
+	if (print_it) {
+		cprintf(g_e, "[ci#%d] %s nargs=%d nrets=%d",
+		        call_n, name, (int)nargs, (int)nrets);
+		for (uInt i = 0; i < nargs && i < 6; i++)
+			cprintf(g_e, " a%d=0x%X", (int)i,
+				(unsigned)a[3 + i]);
+		cprintf(g_e, " -> rc=%d", rc);
+		for (uInt i = 0; i < nrets && i < 6; i++)
+			cprintf(g_e, " r%d=0x%X", (int)i,
+				(unsigned)a[3 + nargs + i]);
+		cprintf(g_e, "\n");
+	}
 	return rc;
 #else
 	return (int)client_interface((Cell *)args);
