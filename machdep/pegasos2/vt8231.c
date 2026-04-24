@@ -84,3 +84,136 @@ void vt8231_pic_eoi_master(void)
 {
 	mmio_write8(pic_master_cmd(), 0x20);    /* OCW2: non-specific EOI */
 }
+
+/* --------------------------------------------------------------- *
+ *  SMBus host controller + W83194 clock-generator probe            *
+ * --------------------------------------------------------------- *
+ *
+ * Pegasos2's FSB (133 MHz default) is programmable via the W83194
+ * clock synthesizer on SMBus at address 0x69. Phase 1 currently
+ * hard-codes PEGASOS2_FSB_HZ_DEFAULT; this code path lets us
+ * query the real setting. Whether or not the query succeeds,
+ * pegasos2 always reports a decrementer tick that is useful for
+ * coarse timing; the W83194 value only improves accuracy.
+ *
+ * VT8231 PMU function 4 is not modelled by QEMU, so on QEMU
+ * every probe here returns -1 / 0 and the timer code falls
+ * back to PEGASOS2_FSB_HZ_DEFAULT. Real-HW validation is
+ * deferred per the "QEMU first" directive.
+ */
+
+int vt8231_smbus_probe(unsigned *smbus_io_base)
+{
+	/* Vendor-ID probe: a non-present function reads as all-ones. */
+	uint32_t vid = pci_cfg_read32(VT8231_HOST, VT8231_BUS, VT8231_DEV,
+	                              VT8231_FN_PMU, 0x00);
+	if (vid == 0xFFFFFFFFu || vid == 0)
+		return -1;
+
+	/* The SMBus I/O base lives at fn4 config offset 0x90 per the
+	 * VT8231 datasheet. Low bit is the IO-space marker; mask it
+	 * off and take the 16-bit port base. */
+	uint32_t bar = pci_cfg_read32(VT8231_HOST, VT8231_BUS, VT8231_DEV,
+	                              VT8231_FN_PMU,
+	                              VT8231_PMU_SMB_IO_BASE_REG);
+	unsigned base = bar & 0xFFF0u;
+	if (base == 0)
+		return -1;
+
+	*smbus_io_base = base;
+	return 0;
+}
+
+static inline uint32_t
+smb_mmio(unsigned smbus_io_base, unsigned reg)
+{
+	return PCI1_IO_BASE + smbus_io_base + reg;
+}
+
+int vt8231_smbus_read_byte(unsigned smbus_io_base,
+                           unsigned address, unsigned reg)
+{
+	if (smbus_io_base == 0)
+		return -1;
+
+	/* Clear any stale status bits (write-1-to-clear). */
+	mmio_write8(smb_mmio(smbus_io_base, VT8231_SMB_HST_STS),
+	            VT8231_SMB_STS_INTR   | VT8231_SMB_STS_DEVERR |
+	            VT8231_SMB_STS_BUSCOL | VT8231_SMB_STS_FAIL);
+
+	/* Spin if the controller is already busy. Bounded so a dead
+	 * controller can't hang the boot. */
+	for (int i = 0; i < 1000; i++) {
+		uint8_t sts = mmio_read8(smb_mmio(smbus_io_base,
+		                                   VT8231_SMB_HST_STS));
+		if (!(sts & VT8231_SMB_STS_BUSY))
+			break;
+	}
+
+	/* Address byte: 7-bit slave + read bit (1). */
+	mmio_write8(smb_mmio(smbus_io_base, VT8231_SMB_HST_ADD),
+	            (uint8_t)((address << 1) | 1u));
+	/* Command byte: target register on the slave. */
+	mmio_write8(smb_mmio(smbus_io_base, VT8231_SMB_HST_CMD),
+	            (uint8_t)reg);
+	/* Kick a byte-read transaction. */
+	mmio_write8(smb_mmio(smbus_io_base, VT8231_SMB_HST_CNT),
+	            VT8231_SMB_CNT_START | VT8231_SMB_CNT_BYTE);
+
+	/* Poll for completion or error. */
+	for (int i = 0; i < 100000; i++) {
+		uint8_t sts = mmio_read8(smb_mmio(smbus_io_base,
+		                                   VT8231_SMB_HST_STS));
+		if (sts & (VT8231_SMB_STS_DEVERR |
+		           VT8231_SMB_STS_BUSCOL |
+		           VT8231_SMB_STS_FAIL))
+			return -1;
+		if (sts & VT8231_SMB_STS_INTR) {
+			uint8_t val = mmio_read8(smb_mmio(smbus_io_base,
+			                                   VT8231_SMB_HST_DAT0));
+			/* Clear INTR so subsequent reads don't see stale
+			 * completion. */
+			mmio_write8(smb_mmio(smbus_io_base,
+			                      VT8231_SMB_HST_STS),
+			            VT8231_SMB_STS_INTR);
+			return (int)val;
+		}
+	}
+	return -1;  /* timeout */
+}
+
+#define W83194_SMBUS_ADDR   0x69u
+#define W83194_REG_FSB_CFG  0x03u  /* Pegasos2 reads CPU-FSB select here
+                                    * per Genesi documentation. */
+
+unsigned vt8231_w83194_fsb_hz(void)
+{
+	unsigned base;
+	if (vt8231_smbus_probe(&base) != 0)
+		return 0;
+
+	int fsb_cfg = vt8231_smbus_read_byte(base, W83194_SMBUS_ADDR,
+	                                     W83194_REG_FSB_CFG);
+	if (fsb_cfg < 0)
+		return 0;
+
+	/* Bits 2..0 of register 0x03 select the FSB frequency on the
+	 * W83194 variants used by Pegasos II. Values per the Winbond
+	 * datasheet:
+	 *   0b000 ->  66 MHz
+	 *   0b001 ->  75 MHz
+	 *   0b010 ->  83 MHz
+	 *   0b011 -> 100 MHz
+	 *   0b100 -> 120 MHz
+	 *   0b101 -> 133 MHz  (Pegasos II default)
+	 *   0b110 -> 150 MHz
+	 *   0b111 -> 166 MHz
+	 * A future revision could read the full frequency table from
+	 * a Pegasos2-specific I2C leaf; for now we support the values
+	 * documented in the boardsource Genesi material. */
+	static const unsigned fsb_table[8] = {
+		 66666667u,  75000000u,  83000000u, 100000000u,
+		120000000u, 133000000u, 150000000u, 166666667u
+	};
+	return fsb_table[fsb_cfg & 0x07u];
+}

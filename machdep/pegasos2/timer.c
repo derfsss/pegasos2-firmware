@@ -11,6 +11,7 @@
 
 #include <stdint.h>
 #include "timer.h"
+#include "vt8231.h"
 
 /* Declared (and defined, in .bss) by exceptions.S. Volatile so the
  * compiler reloads them after any store that could be the decrementer
@@ -24,18 +25,17 @@ static uint32_t s_tb_hz;
 void timer_calibrate(void)
 {
 	/*
-	 * Pegasos II board default. Real HW can probe the W83194
-	 * clock generator via VT8231 SMBus (address 0x69) and
-	 * override; that probe is not implemented yet. Recorded in
-	 * PROGRESS.md Near-term as a TODO.
-	 *
-	 * On QEMU the emulated time-base frequency is unrelated to
-	 * this value (QEMU picks its own TB rate for pegasos2), so
-	 * pegasos2_get_msecs_ticks() will not be wall-clock-accurate there.  It is
-	 * still monotonically increasing, which is all the self-test
-	 * requires.
+	 * Try the W83194 clock-synthesizer probe first. On real HW
+	 * this returns the actual FSB the board was strapped to (one
+	 * of 66/75/83/100/120/133/150/166 MHz). On QEMU the probe
+	 * fails (no VT8231 fn 4 model) and we fall back to the board
+	 * default of 133 MHz. Either way the decrementer tick is
+	 * monotonically increasing, which is what the self-test
+	 * requires; the wall-clock accuracy delta only matters on
+	 * real HW.
 	 */
-	s_fsb_hz     = PEGASOS2_FSB_HZ_DEFAULT;
+	unsigned probed = vt8231_w83194_fsb_hz();
+	s_fsb_hz     = probed ? probed : PEGASOS2_FSB_HZ_DEFAULT;
 	s_tb_hz      = s_fsb_hz / 4u;
 	_dec_reload  = s_tb_hz / 1000u;
 }

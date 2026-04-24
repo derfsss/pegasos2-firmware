@@ -220,13 +220,14 @@ void phase1_c_main(void)
 	}
 
 	/*
-	 * Seed _dec_reload from Pegasos II board defaults before any
-	 * interrupt can fire. Real-HW path will replace this with a
-	 * W83194 SMBus probe; on QEMU the value is not wall-clock
-	 * accurate but the 0x900 handler still re-arms with it and
+	 * Seed _dec_reload from the real FSB where possible. timer_
+	 * calibrate() probes the W83194 clock generator via VT8231
+	 * fn 4 SMBus; on QEMU (no fn 4 model) the probe returns 0
+	 * and we fall back to the board default (133 MHz). Either
+	 * way the 0x900 handler re-arms with the value set here and
 	 * the tick counter advances monotonically.
 	 */
-	uart_puts(UART1_BASE, "\nClock calibration (Pegasos II defaults, W83194 probe TBD):\n");
+	uart_puts(UART1_BASE, "\nClock calibration (W83194 SMBus probe w/ board-default fallback):\n");
 	timer_calibrate();
 	uart_puts(UART1_BASE, "  FSB = ");
 	uart_put_hex32(UART1_BASE, timer_fsb_hz());
