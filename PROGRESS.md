@@ -148,7 +148,19 @@ ExtInt → CI Tier-B → SMBus):
    has no IOMMU; any malloc'd buffer is DMA-capable). Linked
    `-lgcc` for `__udivdi3`/`__umoddi3` (deblocker's byte-offset
    seek uses 64-bit division).
-   Downstream milestones planned: M4
+   Block 4/N (`73ca06c`): ISO9660 filesystem driver registered.
+   Pulled upstream `fs/iso9660.c` (555 LOC, CodeGen-BSD), added
+   &g_iso9660_fs to the machdep's g_filesys[] so disklbl's
+   file_system() dispatch fires the iso9660 action for FS_PROBE /
+   FS_LIST / FS_LOAD. Added init_filesystem to init_list[] (exposes
+   $list-files + list-files Forth words interactively). New
+   test-iso-ls Forth word opens the first ATAPI child and invokes
+   list-files on "/", which walks the iso9660 root and prints
+   volume ID + one line per entry. Verified on the AOS4 Install CD
+   (`Pegasos2InstallCD-53.54.iso`): volume ID "AmigaOS 4.1 Final
+   Edition", 10+ entries including `amigaboot.of` at 36644 bytes
+   (the M6 target) and `bootloader_prepare`.
+   Downstream milestones planned: M5
    cache, M4 ISO9660 FS + fs/fs dispatcher, M5 /aliases + test-
    media generation, M6 machine_go → machine_jump_os integration
    + `boot cd /test.elf` end-to-end, M7 NVRAM defaults +
@@ -226,6 +238,7 @@ enabled in the default build.
 ## Commit history (as of this writing)
 
 ```
+73ca06c  Block 4/N: ISO9660 filesystem + test-iso-ls lists AOS4 CD root
 287c96a  Block 3/N: block reads via deblocker -- CD001 at LBA 16 verified
 a79e0f7  Block 2/N: VT8231 PCI IDE driver attaches + IDENTIFY works
 338af27  Block 1/N: PCI device-tree installer + ls-pci smoke test
