@@ -236,7 +236,17 @@ the firmware side of the spec-07 boot handoff is proven.
        rev1 only; modern mkfs.ext2 defaults not recognised --
        format with `-r 0 -O none` for boot-readable ext2.
      Arc FS-B Amiga filesystems (FFS2-first per user):
-       B1 RDB partition parser (~1 day, prerequisite)
+       B1 RDB partition parser (DONE, `9d324f7`) -- pegasos2
+          amiga_rdb.c walks RigidDiskBlock + PartitionBlock
+          chain, computes partition byte offsets from DosEnvec
+          geometry, recurses into file_system per partition.
+          Handles DOS\0..\7 DosType identification + SFS + PFS
+          + CDFS in dostype_label(). Gotcha: SF's cprintf can't
+          safely pass uLong via %lu -- split 64-bit values into
+          explicit uInt halves. Test image generator in
+          test_kernel/mkrdb.py. Regression timeout bumped from
+          10s to 25s (install-packages now iterates 6 Filesys
+          probes and takes longer to reach ok).
        B2 OFS/FFS/Intl/LongName reader covering DOS\0..\3,\6,\7
           with DOS\7 (FFS2) as verification target (~2.5 days)
        B3 DirCache DOS\4/\5 (~0.5 day, nice-to-have)
@@ -321,6 +331,7 @@ enabled in the default build.
 ## Commit history (as of this writing)
 
 ```
+9d324f7  Arc FS-B Block 1: Amiga Rigid Disk Block partition parser
 57f0039  Arc FS-A: FAT12/16/32 + ext2 + DOS MBR partitions
 9fa3456  Block 7/N: NVRAM boot defaults -- bare `boot` + auto-boot work
 c6a1fc5  Block 6/N: boot cd /test.elf end-to-end -- full spec-07 flow works
