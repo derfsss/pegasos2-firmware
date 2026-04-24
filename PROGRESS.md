@@ -226,8 +226,15 @@ the firmware side of the spec-07 boot handoff is proven.
    (Berkeley FFS != Amiga FFS despite the name; BSDs have no
    Amiga FS support).
    Planned arcs:
-     Arc FS-A PC filesystems (~1 day): pull SF's dosfat.c +
-       ext2fs.c; unblocks `boot hd /vmlinux`.
+     Arc FS-A PC filesystems (DONE, `57f0039`): pulled SF's
+       dosfat.c + dospart.c + ext2fs.c; added to g_filesys[]
+       with dospart first (MBR recursion), iso9660 + dosfat +
+       ext2fs after. Tiny compat header for a dead extern in
+       dosfat.c (`struct device devices[]`). Verified boot hd
+       /test.elf works from FAT16 (+13.5 KiB firmware growth).
+       ext2 caveat: SF's reader handles rev0 and feature-free
+       rev1 only; modern mkfs.ext2 defaults not recognised --
+       format with `-r 0 -O none` for boot-readable ext2.
      Arc FS-B Amiga filesystems (FFS2-first per user):
        B1 RDB partition parser (~1 day, prerequisite)
        B2 OFS/FFS/Intl/LongName reader covering DOS\0..\3,\6,\7
@@ -314,6 +321,7 @@ enabled in the default build.
 ## Commit history (as of this writing)
 
 ```
+57f0039  Arc FS-A: FAT12/16/32 + ext2 + DOS MBR partitions
 9fa3456  Block 7/N: NVRAM boot defaults -- bare `boot` + auto-boot work
 c6a1fc5  Block 6/N: boot cd /test.elf end-to-end -- full spec-07 flow works
 817aade  Block 5/N: /aliases/cd + /aliases/hd + test-iso Makefile target
