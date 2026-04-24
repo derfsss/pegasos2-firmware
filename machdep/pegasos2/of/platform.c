@@ -281,6 +281,7 @@ extern Retcode f_boot_kernel(Environ *e);
 extern Retcode f_test_boot(Environ *e);
 extern Retcode f_test_boot_bad(Environ *e);
 extern Retcode f_ls_pci(Environ *e);
+extern Retcode f_test_ide_probe(Environ *e);
 
 static const Initentry init_pegasos2[] = {
 	{ (Byte *)"test-ci", f_test_ci, INVALID_FCODE, F_NONE, T_FUNC HELP(
@@ -297,6 +298,8 @@ static const Initentry init_pegasos2[] = {
 			"(--)  print SF malloc-pool bounds + spec 07 load-address compliance") },
 	{ (Byte *)"ls-pci", f_ls_pci, INVALID_FCODE, F_NONE, T_FUNC HELP(
 			"(--)  walk /pci@80000000 and /pci@c0000000 and print each child device") },
+	{ (Byte *)"test-ide-probe", f_test_ide_probe, INVALID_FCODE, F_NONE, T_FUNC HELP(
+			"(--)  print each IDE disk/cd discovered by install_ide_driver") },
 	{ NULL, NULL, INVALID_FCODE, F_NONE, T_FUNC HELP("") }
 };
 
@@ -441,6 +444,7 @@ EC(install_powerpc_cpu);
 EC(install_display);
 EC(install_failsafe);
 EC(install_pci_tree);
+EC(install_ide_driver);
 
 const Command install_list[] = {
 	install_root,
@@ -451,5 +455,6 @@ const Command install_list[] = {
 	install_display,
 	install_failsafe,
 	install_pci_tree,
+	install_ide_driver,
 	NULL
 };

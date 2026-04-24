@@ -186,7 +186,17 @@ OF_SUBSET := \
     $(BUILD)/of_cpu-ppc.o \
     $(BUILD)/of_nvedit.o \
     $(BUILD)/of_nvram.o \
-    $(BUILD)/of_client.o
+    $(BUILD)/of_client.o \
+    $(BUILD)/of_atadisk.o
+
+# isa/atadisk.c: generic ATA/ATAPI disk driver pulled in Block 2/N.
+# Compiled with an extra include path for ../scsi/scsi.h (which its
+# source uses for ATAPI CDB structs). The bus-layer glue that
+# upstream isa/ata.c provides is replaced by our
+# machdep/pegasos2/of/ide_driver.c (native-mode BARs + PCI I/O
+# window translation).
+$(BUILD)/of_atadisk.o: $(SF)/isa/atadisk.c | $(BUILD)
+	$(CC) $(SF_CFLAGS) -I$(SF)/scsi -c $< -o $@
 
 .PHONY: of-sf-subset
 of-sf-subset: $(OF_SUBSET)
@@ -204,7 +214,8 @@ OF_MACHDEP_OBJS := \
     $(BUILD)/of_ci_entry.o \
     $(BUILD)/of_boot_kernel.o \
     $(BUILD)/of_boot_kernel_asm.o \
-    $(BUILD)/of_pci_tree.o
+    $(BUILD)/of_pci_tree.o \
+    $(BUILD)/of_ide_driver.o
 
 $(BUILD)/of_platform.o: $(SF_MACHDEP)/platform.c | $(BUILD)
 	$(CC) $(SF_CFLAGS) -I$(MACHDEP) -c $< -o $@
@@ -219,6 +230,9 @@ $(BUILD)/of_boot_kernel_asm.o: $(SF_MACHDEP)/boot_kernel.S | $(BUILD)
 	$(CC) $(ASFLAGS) -c $< -o $@
 
 $(BUILD)/of_pci_tree.o: $(SF_MACHDEP)/pci_tree.c | $(BUILD)
+	$(CC) $(SF_CFLAGS) -I$(MACHDEP) -c $< -o $@
+
+$(BUILD)/of_ide_driver.o: $(SF_MACHDEP)/ide_driver.c | $(BUILD)
 	$(CC) $(SF_CFLAGS) -I$(MACHDEP) -c $< -o $@
 
 # Append OF to the firmware link target. phase1_c_main() calls SF's

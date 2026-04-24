@@ -63,4 +63,28 @@ static inline void mmio_write32_le(uint32_t addr, uint32_t val)
 			  : : "r"(val), "r"(addr) : "memory");
 }
 
+/*
+ * 16-bit LE helpers for PCI I/O registers that transfer little-endian
+ * words -- notably the IDE DATA register at offset 0 of an ATA channel.
+ * A native `lhz` on PPC reads byte 0 as MSB; the PCI I/O window is
+ * byte-ordered the same as the PCI bus (LE), so the word "0x1234" as
+ * seen on the bus arrives at CPU memory as bytes 0x34, 0x12. Using
+ * `lhbrx` swaps the halfword and yields the value as the controller
+ * sent it. Sector-data transfers rely on this to stay byte-correct
+ * through the firmware's memcpy path.
+ */
+static inline uint16_t mmio_read16_le(uint32_t addr)
+{
+	uint16_t v;
+	__asm__ volatile ("lhbrx %0, 0, %1; eieio"
+			  : "=r"(v) : "r"(addr) : "memory");
+	return v;
+}
+
+static inline void mmio_write16_le(uint32_t addr, uint16_t val)
+{
+	__asm__ volatile ("sthbrx %0, 0, %1; eieio"
+			  : : "r"(val), "r"(addr) : "memory");
+}
+
 #endif /* IO_H */

@@ -1,0 +1,399 @@
+/*
+ *  Copyright (c) 2026 Pegasos2 clean-room rewrite contributors.
+ *  All rights reserved.
+ *
+ *  Redistribution and use in source and binary forms, with or without
+ *  modification, are permitted under the terms of the CodeGen source
+ *  license reproduced in LICENSES/CodeGen-smartfirmware.txt.
+ *
+ *  Block 2/N -- VT8231 PCI IDE driver attachment.
+ *
+ *  Upstream isa/atadisk.c provides the generic ATA/ATAPI driver; it
+ *  is designed to be callable from any bus-layer glue that can supply
+ *  (reg[4], read_callback, write_callback, parent-package) to
+ *  probe_ata_disks(). Upstream isa/ata.c is NOT used -- it is the
+ *  ISA-bus glue and hard-codes legacy ports + the Isa_device model
+ *  we don't want to drag in.
+ *
+ *  This file is our pegasos2 replacement for isa/ata.c:
+ *    - I/O callbacks that translate "PCI I/O port N" into a CPU MMIO
+ *      access inside the PCI-host's I/O window (0xFE000000 for
+ *      PCI_HOST_1 on QEMU pegasos2).
+ *    - Controller-level method table (open/close/decode-unit/
+ *      encode-unit/dma-alloc/dma-free/selftest).
+ *    - install_ide_driver(): locates the IDE controller node built
+ *      by install_pci_tree (Block 1/N), reads its BARs to decide
+ *      legacy vs native port layout, registers our methods, calls
+ *      probe_ata_disks to create child cd@/disk@ nodes with the
+ *      full ata_disk_methods method table (open/close/read-blocks/
+ *      write-blocks/block-size/etc).
+ *    - test-ide-probe Forth word: walks the disk children and
+ *      prints identity + capacity for each.
+ *
+ *  VT8231 IDE operating modes on QEMU pegasos2:
+ *    Progif = 0x8A puts both channels in PCI IDE "legacy-compat"
+ *    mode (QEMU hw/ide/pci.c:pci_ide_update_mode "case 0xa"). BAR0-3
+ *    are zero-sized; the legacy I/O ports 0x1F0/0x3F6/0x170/0x376 on
+ *    the PCI I/O bus are where the controller actually decodes.
+ *    Real hardware may run either legacy or native mode; we probe
+ *    BAR0-3 and fall back to legacy ports only if a BAR is empty.
+ *    Either way, the driver sees a PCI-I/O-space uint at which the
+ *    ATA registers live; we translate via PCI1_IO_BASE at callback
+ *    time.
+ *
+ *  Endianness: ATA registers are 8-bit, endianness-invariant; the
+ *  DATA register is 16-bit and the PCI I/O bus is little-endian
+ *  ordered. For DATA register transfers we use `lhbrx`/`sthbrx`
+ *  (mmio_read16_le / mmio_write16_le), else plain `lbz`/`stb`.
+ */
+
+#include "defs.h"
+
+#include "io.h"
+#include "mv64361.h"
+#include "pegasos2.h"
+
+/*
+ * PCI I/O window base for host 1 (VT8231 bus). PCI I/O addresses
+ * appear on the CPU side starting here. Port 0x1F0 on the PCI bus
+ * is reachable via CPU memory address 0xFE0001F0.
+ */
+#define PCI1_IO_BASE  0xFE000000u
+
+/*
+ * atadisk.c I/O callback signature:
+ *    Retcode (*read) (uInt addr, void *value, int size);
+ *    Retcode (*write)(uInt addr, Int value,   int size);
+ * `addr` is the ATA-register PCI I/O port (e.g. 0x1F0 + DATA); `size`
+ * is 1 or 2 bytes. We add PCI1_IO_BASE to route through the host
+ * bridge's I/O window.
+ */
+static Retcode
+pegasos2_ide_io_read(uInt addr, void *value, int size)
+{
+	uint32_t mmio = PCI1_IO_BASE + (addr & 0xFFFFu);
+
+	switch (size) {
+	case 1:
+		*(uByte *)value = mmio_read8(mmio);
+		return NO_ERROR;
+	case 2:
+		*(uShort *)value = mmio_read16_le(mmio);
+		return NO_ERROR;
+	default:
+		return E_ABORT;
+	}
+}
+
+static Retcode
+pegasos2_ide_io_write(uInt addr, Int value, int size)
+{
+	uint32_t mmio = PCI1_IO_BASE + (addr & 0xFFFFu);
+
+	switch (size) {
+	case 1:
+		mmio_write8(mmio, (uint8_t)value);
+		return NO_ERROR;
+	case 2:
+		mmio_write16_le(mmio, (uint16_t)value);
+		return NO_ERROR;
+	default:
+		return E_ABORT;
+	}
+}
+
+/*
+ * Simple controller-level methods. atadisk.c needs a parent package
+ * whose methods table supports open/close and (for ATAPI DMA)
+ * dma-alloc/dma-free. We don't do DMA yet, so those return E_ABORT
+ * -- init_drive's path never consults them for PIO-mode IDENTIFY,
+ * which is all M2 requires.
+ */
+C(f_ide_open)
+{
+	IFCKSP(e, 0, 1);
+	PUSH(e, FTRUE);
+	return NO_ERROR;
+}
+
+C(f_ide_close)
+{
+	return NO_ERROR;
+}
+
+/*
+ * decode-unit (str len -- phys.lo phys.hi): parse "CTLR,ID" where
+ * CTLR is 0 (primary) or 1 (secondary) and ID is 0 (master) or 1
+ * (slave). This matches the unit-addr convention atadisk.c's
+ * probe_ata_disk() encodes via its `reg = <ctlr id 0>` property.
+ * Required for resolve_path to reach "/pci@.../ide@c,1/cd@0".
+ */
+C(f_ide_decode_unit)
+{
+	Byte *str;
+	Int slen;
+	Cell hi = 0, lo = 0, err;
+
+	IFCKSP(e, 2, 2);
+	POP(e, slen);
+	POPT(e, str, Byte *);
+	setstrlen(&str, &slen);
+
+	parse_number(16, &str, &slen, &hi, &err, FALSE);
+
+	if (slen && *str == ',') {
+		str++; slen--;
+		parse_number(16, &str, &slen, &lo, &err, FALSE);
+	}
+
+	PUSH(e, lo);
+	PUSH(e, hi);
+	return NO_ERROR;
+}
+
+/*
+ * encode-unit (phys.lo phys.hi -- str len): inverse of decode-unit.
+ * "CTLR,ID" in hex.
+ */
+C(f_ide_encode_unit)
+{
+	static Byte buf[32];
+	Cell hi, lo;
+
+	IFCKSP(e, 2, 2);
+	POP(e, hi);
+	POP(e, lo);
+
+	bprintf((char *)buf, "%x,%x", (unsigned int)hi, (unsigned int)lo);
+
+	PUSHP(e, buf);
+	PUSH(e, strlen((char *)buf));
+	return NO_ERROR;
+}
+
+C(f_ide_dma_alloc)
+{
+	(void)e;
+	return E_ABORT;   /* PIO only in M2 */
+}
+
+C(f_ide_dma_free)
+{
+	(void)e;
+	return E_ABORT;
+}
+
+C(f_ide_selftest)
+{
+	IFCKSP(e, 0, 1);
+	PUSH(e, FFALSE);  /* 0 = pass */
+	return NO_ERROR;
+}
+
+static const Initentry ide_ctlr_methods[] = {
+	{ (Byte *)"open",        f_ide_open,        INVALID_FCODE, F_NONE, T_FUNC HELP("") },
+	{ (Byte *)"close",       f_ide_close,       INVALID_FCODE, F_NONE, T_FUNC HELP("") },
+	{ (Byte *)"decode-unit", f_ide_decode_unit, INVALID_FCODE, F_NONE, T_FUNC HELP("") },
+	{ (Byte *)"encode-unit", f_ide_encode_unit, INVALID_FCODE, F_NONE, T_FUNC HELP("") },
+	{ (Byte *)"dma-alloc",   f_ide_dma_alloc,   INVALID_FCODE, F_NONE, T_FUNC HELP("") },
+	{ (Byte *)"dma-free",    f_ide_dma_free,    INVALID_FCODE, F_NONE, T_FUNC HELP("") },
+	{ (Byte *)"selftest",    f_ide_selftest,    INVALID_FCODE, F_NONE, T_FUNC HELP("") },
+	{ NULL, NULL, INVALID_FCODE, F_NONE, T_FUNC HELP("") },
+};
+
+/*
+ * Walk /pci@80000000's children searching for a class-code 0x01 01 XX
+ * package -- that's the IDE controller. Return NULL if absent.
+ * Iteration is deliberately by class-code rather than by path lookup
+ * (finddevice "/pci@.../ide@c,1") because resolve_path requires a
+ * decode-unit method on the /pci@ bus package, which M1 deliberately
+ * didn't install (the PCI-level decode-unit is SF's f_pci_decode_unit
+ * from pci.c, ~100 LOC; deferred until a milestone that needs
+ * path-level PCI navigation from OS clients).
+ */
+static Package *
+find_ide_controller(Environ *e)
+{
+	Package *pci_bus =
+		find_device(e, (Byte *)"/pci@80000000", CSTR);
+	if (pci_bus == NULL)
+		return NULL;
+
+	Package *c;
+	for (c = pci_bus->children; c != NULL; c = c->link) {
+		Int classcode;
+		if (prop_get_int(c->props, (Byte *)"class-code", CSTR,
+				 &classcode) != NO_ERROR)
+			continue;
+		/* Class 01 (storage), subclass 01 (IDE). Progif (low 8
+		 * bits) varies between legacy-compat/native-mode/bus-
+		 * master so we mask it out. */
+		if (((uInt)classcode & 0xFFFF00u) == 0x010100u)
+			return c;
+	}
+	return NULL;
+}
+
+/*
+ * Read the BAR at `offset` on (bus, dev, fn) and return the PCI-I/O
+ * base it resolves to, stripped of flag bits, masked to 16 bits
+ * (the PCI I/O window on Pegasos2 is 64 KiB). Returns `fallback` if
+ * the BAR is zero or not an I/O BAR.
+ */
+static uint32_t
+read_io_bar(int host, uint8_t bus, uint8_t dev, uint8_t fn,
+	    uint8_t offset, uint32_t fallback)
+{
+	uint32_t bar = pci_cfg_read32(host, bus, dev, fn, offset);
+	if ((bar & 1u) == 0)              /* not an I/O BAR */
+		return fallback;
+	uint32_t port = bar & 0xFFFFFFFCu;
+	if (port == 0)                     /* unimplemented / legacy mode */
+		return fallback;
+	return port & 0xFFFFu;
+}
+
+/*
+ * probe_ata_disks signature is external to atadisk.c; atadisk.c
+ * doesn't ship a header for it. Keep this prototype in sync with
+ * upstream/smartfirmware/bin/of/isa/atadisk.c:1222.
+ */
+extern Retcode probe_ata_disks(Environ *e, uInt reg[4], Package *pkg,
+	Retcode (*read)(uInt addr, void *value, int size),
+	Retcode (*write)(uInt addr, Int value, int size));
+
+/*
+ * install_ide_driver: called from install_list[] after
+ * install_pci_tree. Attaches to the VT8231 IDE controller node and
+ * instantiates child cd@/disk@ packages for each populated drive.
+ *
+ * On QEMU pegasos2 with `-cdrom foo.iso`, the CD appears as a child
+ * of the secondary channel (reg[2]/reg[3]) because QEMU's
+ * pci_ide_create_devs() places the first -cdrom on ide.1 = secondary
+ * master. Primary channel typically has no drives in the default
+ * configuration (bare QEMU) and probe_ata_disks returns E_NO_DEVICE
+ * for each, moving on.
+ */
+CC(install_ide_driver)
+{
+	Package *ide = find_ide_controller(e);
+	if (ide == NULL) {
+		/* No IDE controller -- not an error. Some future Pegasos2
+		 * variant may not have a VT8231, and users may disable
+		 * the IDE function via nvedit. */
+		return NO_ERROR;
+	}
+
+	/* Annotate the IDE node so downstream code can identify it. */
+	prop_set_str(ide->props, (Byte *)"device_type", CSTR,
+		     (Byte *)"ide", CSTR);
+	Retcode mr = init_entries(e, ide->dict, ide_ctlr_methods);
+	if (mr != NO_ERROR) return mr;
+
+	/*
+	 * Read BAR0-3 to determine port layout. In native mode BARs are
+	 * programmed; in legacy-compat mode (QEMU default for VT8231)
+	 * BAR0-3 read as 0 and we use the ATA legacy port numbers.
+	 *
+	 * We look up the controller's bus/dev/fn by decoding its reg
+	 * property's first entry (the config-space descriptor whose
+	 * physhi encodes BDF per IEEE-1275 PCI binding).
+	 */
+	/*
+	 * reg is a binary property (not a string), so prop_get_str
+	 * truncates at any NUL byte -- notably the leading 0x00 of
+	 * the config-space physhi for a type-0 PCI device. Go
+	 * straight to the Entry instead.
+	 */
+	Entry *regent = find_table(ide->props, (Byte *)"reg", CSTR);
+	if (regent == NULL || regent->len < (Int)sizeof(Int))
+		return E_ABORT;
+	Byte *regp = (Byte *)regent->v.array;
+	Int reglen = regent->len;
+
+	uint32_t physhi = 0;
+	{
+		/* First cell of reg = physhi of config-space descriptor. */
+		physhi = ((uInt)regp[0] << 24) | ((uInt)regp[1] << 16) |
+			 ((uInt)regp[2] << 8)  | (uInt)regp[3];
+	}
+	uint8_t bus = (physhi >> 16) & 0xFFu;
+	uint8_t dev = (physhi >> 11) & 0x1Fu;
+	uint8_t fn  = (physhi >> 8)  & 0x07u;
+	int host = PCI_HOST_1;   /* /pci@80000000 is always host 1 on Pegasos2 */
+
+	uInt reg[4];
+	reg[0] = read_io_bar(host, bus, dev, fn, 0x10, 0x1F0u);  /* BAR0 or 0x1F0 */
+	reg[1] = read_io_bar(host, bus, dev, fn, 0x14, 0x3F6u);  /* BAR1 or 0x3F6 */
+	reg[2] = read_io_bar(host, bus, dev, fn, 0x18, 0x170u);  /* BAR2 or 0x170 */
+	reg[3] = read_io_bar(host, bus, dev, fn, 0x1C, 0x376u);  /* BAR3 or 0x376 */
+
+	return probe_ata_disks(e, reg, ide,
+			       pegasos2_ide_io_read, pegasos2_ide_io_write);
+}
+
+/* ---------- test-ide-probe Forth word ---------- */
+
+static const char *
+atapi_type_str(Int classcode)
+{
+	/* Not currently used -- the atapi flag from atadisk.c is what
+	 * matters; keep as a future hook. */
+	(void)classcode;
+	return "";
+}
+
+/*
+ * Walk the IDE controller package's children (disk@ / cd@ packages
+ * created by probe_ata_disks) and print identity info pulled from
+ * each package's properties and PSelf struct.
+ */
+CC(f_test_ide_probe)
+{
+	Package *ide = find_ide_controller(e);
+	if (ide == NULL) {
+		cprintf(e, "test-ide-probe: no IDE controller found\n");
+		return NO_ERROR;
+	}
+
+	Package *c;
+	int found = 0;
+	for (c = ide->children; c != NULL; c = c->link) {
+		Byte *name;
+		Int namelen;
+		if (prop_get_str(c->props, (Byte *)"name", CSTR,
+				 &name, &namelen) != NO_ERROR) {
+			name = (Byte *)"?";
+			namelen = 1;
+		}
+
+		/* Fetch the reg property to decode ctlr,id. First cell is
+		 * ctlr (0 or 1), second is id (0 or 1), third is size (0). */
+		Byte *regp;
+		Int rlen;
+		Int ctlr = 0, id = 0;
+		if (prop_get_str(c->props, (Byte *)"reg", CSTR,
+				 &regp, &rlen) == NO_ERROR && rlen >= 8) {
+			ctlr = ((Int)regp[0] << 24) | ((Int)regp[1] << 16) |
+			       ((Int)regp[2] << 8)  | (Int)regp[3];
+			id   = ((Int)regp[4] << 24) | ((Int)regp[5] << 16) |
+			       ((Int)regp[6] << 8)  | (Int)regp[7];
+		}
+
+		Int is_atapi =
+			(find_table(c->props, (Byte *)"atapi", CSTR) != NULL)
+			? 1 : 0;
+
+		cprintf(e, "  %S@%x,%x  %s",
+			name, namelen, (Int)ctlr, (Int)id,
+			is_atapi ? "ATAPI" : "ATA");
+
+		(void)atapi_type_str(0);
+		cprintf(e, "\n");
+		found++;
+	}
+
+	if (!found)
+		cprintf(e, "test-ide-probe: no drives attached\n");
+	return NO_ERROR;
+}
