@@ -128,7 +128,27 @@ ExtInt → CI Tier-B → SMBus):
    PCI binding properties (reg/assigned-addresses/ranges) whose
    physhi often has a leading 0x00. Always use find_table +
    ent->v.array + ent->len for binary props.
-   Downstream milestones planned: M3 deblock
+   Block 3/N (`287c96a`): block reads via the deblocker work end-
+   to-end, verified by reading LBA 16 of the AOS4 install CD and
+   confirming the `\x01CD001\x01` ISO9660 primary volume descriptor
+   signature. Pulled 3 upstream files (~1031 LOC, all CodeGen-BSD):
+   `deblock.c` (/packages/deblocker, variable-size cached I/O),
+   `disklbl.c` (/packages/disk-label, required by atadisk's open),
+   `fs/fs.c` (file_system dispatcher; `g_filesys[]` stays empty
+   for M3, M4 will fill with iso9660). Added to pci_tree.c: PCI
+   bus decode-unit/encode-unit (config-space form only) and
+   open/close -- necessary so `open-dev` can walk
+   /pci@80000000/ide@C,1/cd@1,0. Fixed M1 bug: child package names
+   now store the genus only ("ide") per IEEE-1275 §3.5 -- M1
+   baked "@<unit>" into the name property which caused
+   package_name to double the suffix ("ide@C,1@C,1") once
+   encode-unit started working, AND broke path matching since
+   name_match compared "ide" to "ide@C,1". Replaced M2's
+   `f_ide_dma_alloc` E_ABORT stub with real malloc/free (Pegasos2
+   has no IOMMU; any malloc'd buffer is DMA-capable). Linked
+   `-lgcc` for `__udivdi3`/`__umoddi3` (deblocker's byte-offset
+   seek uses 64-bit division).
+   Downstream milestones planned: M4
    cache, M4 ISO9660 FS + fs/fs dispatcher, M5 /aliases + test-
    media generation, M6 machine_go → machine_jump_os integration
    + `boot cd /test.elf` end-to-end, M7 NVRAM defaults +
@@ -206,6 +226,7 @@ enabled in the default build.
 ## Commit history (as of this writing)
 
 ```
+287c96a  Block 3/N: block reads via deblocker -- CD001 at LBA 16 verified
 a79e0f7  Block 2/N: VT8231 PCI IDE driver attaches + IDENTIFY works
 338af27  Block 1/N: PCI device-tree installer + ls-pci smoke test
 4cb021f  Boot 5/N: BATs + MSR[IR|DR] at OS handoff (spec 07 translation-on)
