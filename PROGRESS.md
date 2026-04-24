@@ -247,8 +247,26 @@ the firmware side of the spec-07 boot handoff is proven.
           test_kernel/mkrdb.py. Regression timeout bumped from
           10s to 25s (install-packages now iterates 6 Filesys
           probes and takes longer to reach ok).
-       B2 OFS/FFS/Intl/LongName reader covering DOS\0..\3,\6,\7
-          with DOS\7 (FFS2) as verification target (~2.5 days)
+       B2 OFS/FFS/Intl/LongName reader (DONE) -- pegasos2
+          amiga_ffs.c readonly reader covering DOS\0..\3 (OFS +
+          FFS + Intl variants) and DOS\6/\7 (LongName incl.
+          FFS2). Clean-room from Clevy adflib FAQ + Barthel
+          DCFS/LNFS reference; no GPL/LGPL code read. open_volume
+          verifies T_HEADER+ST_ROOT+checksum at block 880 (floppy
+          default) with fallback probe list; walk_path does case-
+          folded hash lookup (hash = len; h = h*13 + fold(c) &
+          0x7FF; h % 72); read_file_contents follows data_blocks[]
+          downwards from BSIZE-208 and chases T_LIST extension
+          chain via OFF_EXTENSION. LNFS NaC-aware extract_name.
+          mkrdb.py extended with an FFS2 skeleton (boot block,
+          root at 880, file header + extension block for > DB_MAX
+          data blocks, raw FFS data blocks). Verified end-to-end:
+          `list-files hd:0,/` prints `Amiga FFS volume "TEST":
+          67788 test.elf`; `boot hd:0 /test.elf` yields `KERNEL
+          OK` + expected PANIC at 0x700 (test_kernel twi halt).
+          Gotcha: `load hd:0,/test.elf` splices boot-file onto
+          s->args and breaks name hashing -- use `load hd:0
+          /test.elf` (space) or `load hd:0` with boot-file set.
        B3 DirCache DOS\4/\5 (~0.5 day, nice-to-have)
        B4 SFS-00 reader (~3-5 days, nice-to-have)
        B5 PFS3 reader (~5-7 days, nice-to-have; highest risk
