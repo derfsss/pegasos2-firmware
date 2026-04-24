@@ -80,8 +80,31 @@ struct nvram_data g_nvram[] = {
 	 */
 	{ "input-device",         "/failsafe" },
 	{ "output-device",        "/failsafe" },
-	{ "auto-boot?",           "false"     },  /* no boot path yet */
-	{ "use-nvramrc?",         "false"     },
+	/*
+	 * Boot defaults (Block 7/N). A bare `boot` at the ok prompt
+	 * (no args) triggers SF's do_load (admin.c:1435) which falls
+	 * back to these when the user didn't supply a device or file.
+	 *     `cd` expands via /aliases/cd to
+	 *       /pci@80000000/ide@C,1/cd@1,0 (Block 5/N install_aliases)
+	 *     `/test.elf;1` is what genisoimage's ISO9660 Level-1 PVD
+	 *       uses for our Makefile test-iso target (Block 5/N). For
+	 *       real AOS4 boot the user would `setenv boot-file
+	 *       /amigaboot.of;1` at the ok prompt.
+	 *
+	 * auto-boot? stays false so the default three-test regression
+	 * matrix output (no CD, unchanged 2208 bytes) is preserved.
+	 * Users enable auto-boot interactively:
+	 *     ok setenv auto-boot? true
+	 *     ok reset
+	 * SF's main.c:262-316 then runs `boot-command` verbatim
+	 * (default "boot") after a 1-second countdown.
+	 */
+	{ "boot-device",          "cd"             },
+	{ "boot-file",            "/test.elf;1"    },
+	{ "boot-command",         "boot"           },
+	{ "auto-boot?",           "false"          },
+	{ "auto-boot-timeout",    "1000"           },
+	{ "use-nvramrc?",         "false"          },
 	{ NULL, NULL }                              /* terminator */
 };
 
