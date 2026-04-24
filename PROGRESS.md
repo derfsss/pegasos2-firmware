@@ -175,7 +175,24 @@ ExtInt → CI Tier-B → SMBus):
    end-to-end boot test. Gotcha recorded: install-time diagnostic
    uart_puts calls are ~2 ms/char on QEMU, ballooning probe
    runtime from 5s to >25s; looked like a hang until stripped.
-   Downstream milestones planned: M6
+   Block 6/N (`c6a1fc5`): full spec-07 boot path works end-to-end.
+   `boot cd /test.elf;1` at the ok prompt runs open-dev through
+   the PCI/IDE/deblocker/disklabel/iso9660 chain, loads the file
+   to 0x00400000, fires init-program + go, which hits our new
+   exec_is_exec / exec_load plumbing and hands off via the Boot
+   5/N register-state trampoline. Observed output:
+   `machine_go: e_entry=0x800000 r1=0x8012B0; transferring...
+   KERNEL OK r5=FFF42E04 r1=008012B0 MSR=00000032
+   DBAT0U=00001FFF DBAT1U=F0001FFF`. Refactored boot_kernel.c
+   to expose elf32_ppc_be_is_exec + elf32_ppc_be_load matching
+   SF's Exec_entry signature; registered as &pegasos2_ppc_elf_exec
+   in platform.c's g_exec_list[]. Implemented real
+   machine_init_load (e->load = 0x00400000 per spec 07),
+   machine_init_program (exec_is_exec dispatch), and machine_go
+   (exec_load + machine_jump_os). Pulled exe/exe.c into OF_SUBSET
+   for the dispatcher. All 8 Boot 3/N hardening checks now apply
+   to `boot cd` path too.
+   Downstream milestones planned: M7
    cache, M4 ISO9660 FS + fs/fs dispatcher, M5 /aliases + test-
    media generation, M6 machine_go → machine_jump_os integration
    + `boot cd /test.elf` end-to-end, M7 NVRAM defaults +
@@ -253,6 +270,7 @@ enabled in the default build.
 ## Commit history (as of this writing)
 
 ```
+c6a1fc5  Block 6/N: boot cd /test.elf end-to-end -- full spec-07 flow works
 817aade  Block 5/N: /aliases/cd + /aliases/hd + test-iso Makefile target
 73ca06c  Block 4/N: ISO9660 filesystem + test-iso-ls lists AOS4 CD root
 287c96a  Block 3/N: block reads via deblocker -- CD001 at LBA 16 verified
