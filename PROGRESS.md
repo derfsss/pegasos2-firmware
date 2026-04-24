@@ -311,7 +311,33 @@ the firmware side of the spec-07 boot handoff is proven.
           -> IB anodeblocks -> AB anodes). Anode-chain directory
           walk + file read. Small-disk variant only. mkrdb.py
           --pfs N (N=1 or 2) generator.
-     Arc FS-C exFAT (~2-3 days, nice-to-have).
+     Arc FS-C exFAT (DONE, `0b390c7`) -- fs_exfat.c readonly
+     reader for Microsoft exFAT. Clean-room from the 2019
+     public spec at learn.microsoft.com/windows/win32/fileio/
+     exfat-specification. Boot-sector parse, FAT chain walk,
+     32-byte directory entry sets (0x85 File + 0xC0 Stream Ext
+     + 0xC1 File Name). 512-byte sectors, first FAT only,
+     root directory only, no sub-dir traversal. test_kernel/
+     mkexfat.py builds a whole-disk image from pure Python
+     (no sudo, no mkfs.exfat dependency); writes skip the
+     Allocation Bitmap and Up-case Table entries that a
+     stricter reader would require.
+
+   Real-HW deferred follow-ups completed at the code level
+   (validation awaits a real-HW session):
+     - M48T59 CI get-time-of-day / set-time-of-day (`6fc21ac`):
+       RTC register read + BCD decoding; QEMU fallback to a
+       1970-01-01 epoch. Registered in /openprom/client-services
+       via install_pegasos2_ci_services.
+     - W83194 SMBus FSB probe (`1227018`): VT8231 fn 4 SMBus
+       host controller + W83194 register 0x03 decode;
+       timer_calibrate() now probes and falls back to board
+       defaults. QEMU pegasos2 has no fn 4 SMBus model so
+       fallback always triggers.
+     - VT8231 completeness audit (`4a18d89`): PIRQ-A..D router
+       configured per docs/04 board convention; SuperIO
+       config-window re-locked after UART1 enable. Documents
+       the VT8231 sub-devices we intentionally skip.
    cache, M4 ISO9660 FS + fs/fs dispatcher, M5 /aliases + test-
    media generation, M6 machine_go → machine_jump_os integration
    + `boot cd /test.elf` end-to-end, M7 NVRAM defaults +
@@ -397,6 +423,11 @@ c6a1fc5  Block 6/N: boot cd /test.elf end-to-end -- full spec-07 flow works
 73ca06c  Block 4/N: ISO9660 filesystem + test-iso-ls lists AOS4 CD root
 287c96a  Block 3/N: block reads via deblocker -- CD001 at LBA 16 verified
 a79e0f7  Block 2/N: VT8231 PCI IDE driver attaches + IDENTIFY works
+4a18d89  VT8231/audit: PIRQ router + SuperIO re-lock (spec 04 completeness)
+1227018  W83194/1: VT8231 SMBus host + W83194 FSB probe wired into timer_calibrate
+6fc21ac  M48T59/2 + CI/7: get-time-of-day / set-time-of-day via M48T59 RTC
+0b390c7  Arc FS-C: exFAT readonly filesystem reader
+90d39d2  PROGRESS.md: record CI/5 + CI/6 (client-services install + test-ci-boot)
 35d0833  CI/6: test-ci-boot Forth word exercises spec-06 boot service
 ba17b84  CI/5: install_client_services + test-kernel CI callback
 b93c907  PROGRESS.md: record Arc FS-B B3/B4/B5 (DirCache + SFS + PFS3) completion
