@@ -120,9 +120,19 @@ machine_jump_os:
 	isync
 
 	/*
-	 * MSR: clear EE (bit 16, 0x00008000), set IR (bit 26, 0x20) and
-	 * DR (bit 27, 0x10). Leave MSR[ME]/[RI] alone so machine-check
-	 * and recoverable bits stay set. 0x30 is IR|DR in the low 16.
+	 * MSR: clear EE (bit 16, 0x00008000), set IR (bit 26, 0x20),
+	 * DR (bit 27, 0x10), and FP (bit 18, 0x2000). Leave MSR[ME]/
+	 * [RI] alone so machine-check and recoverable bits stay set.
+	 *
+	 * FP matters because real OSes use floating-point from the
+	 * bootstrap onwards -- AmigaOS 4's amigaboot.of performs fsub
+	 * /fmadd/frsp during early device-tree parsing (integer-to-
+	 * float-to-integer conversions), which take an 0x800 "FP
+	 * Unavailable" interrupt if MSR[FP] is clear. The spec 07
+	 * register-state table doesn't spell this out, but every
+	 * stock Pegasos2 bootloader expects FP enabled at handoff.
+	 *
+	 * 0x2030 is FP | IR | DR.
 	 *
 	 * After mtmsr the next instruction fetch is a translated fetch;
 	 * IBAT1 covers 0xFFF00000 (the VA of this code, running from flash)
@@ -132,7 +142,7 @@ machine_jump_os:
 	 */
 	mfmsr   0
 	rlwinm  0, 0, 0, 17, 15         /* clear EE */
-	ori     0, 0, 0x0030            /* set IR | DR */
+	ori     0, 0, 0x2030            /* set FP | IR | DR */
 	mtmsr   0
 	isync                            /* context synch per 7447A PEM */
 
