@@ -468,6 +468,70 @@ extern Retcode f_test_read_block(Environ *e);
 extern Retcode f_test_iso_ls(Environ *e);
 extern Retcode f_test_aliases(Environ *e);
 
+/*
+ * `test-ci-boot ( addr len -- )` -- invoke ci_handler with the
+ * "boot" service and the given Forth counted-string as bootspec.
+ * Mirrors what an OS-resident boot loader would do via its saved
+ * r5 handler pointer: spec 06 §"Required services" maps "boot"
+ * onto SF's f_client_boot, which splits the bootspec at the first
+ * whitespace into device + filename/args and hands off to
+ * boot_load (the same entry point interactive `boot` uses).
+ *
+ * On success control transfers to the loaded kernel and we never
+ * return. On failure ci_handler returns nonzero and we print the
+ * code so the user can diagnose.
+ *
+ * Typical smoke uses:
+ *     " nosuchdev" test-ci-boot    ->  CI=-1 (service returned error)
+ *     " cd /test.elf" test-ci-boot -> boots embedded ISO if -cdrom set
+ *     " hd:0 /test.elf" test-ci-boot -> boots from Amiga HD partition
+ *
+ * The string must be NUL-terminated before invocation because SF's
+ * f_client_boot treats the bootspec as a C string. We copy into a
+ * static buffer and append the terminator.
+ */
+#define CI_BOOTSPEC_MAX 255
+static char ci_bootspec_buf[CI_BOOTSPEC_MAX + 1];
+
+CC(f_test_ci_boot)
+{
+	Int  len;
+	Cell addr;
+	Cell args[4];
+
+	IFCKSP(e, 2, 0);
+	POP(e, len);
+	POP(e, addr);
+
+	if (len < 0) len = 0;
+	if (len > CI_BOOTSPEC_MAX) len = CI_BOOTSPEC_MAX;
+	const char *src = (const char *)(uPtr)addr;
+	for (Int i = 0; i < len; i++)
+		ci_bootspec_buf[i] = src[i];
+	ci_bootspec_buf[len] = '\0';
+
+	cprintf(e, "test-ci-boot: CI boot \"%s\"\n", ci_bootspec_buf);
+
+	/* Build the spec-06 CI call struct: service="boot", nargs=1,
+	 * nreturns=0, args[0] = bootspec pointer. f_client_boot signals
+	 * errors via the dispatch Retcode (which client_interface maps
+	 * to a non-zero ci_handler return). */
+	args[0] = (Cell)(uPtr)"boot";
+	args[1] = 1;
+	args[2] = 0;
+	args[3] = (Cell)(uPtr)ci_bootspec_buf;
+
+	int ret = ci_handler(args);
+
+	/* If CI boot succeeded we don't reach here -- control is now
+	 * in the loaded image. So any return here is by definition
+	 * the error path. */
+	cprintf(e, "test-ci-boot: ci_handler returned %d "
+	           "(0=ok/image-jumped, nonzero=service error)\n",
+	        ret);
+	return NO_ERROR;
+}
+
 static const Initentry init_pegasos2[] = {
 	{ (Byte *)"test-ci", f_test_ci, INVALID_FCODE, F_NONE, T_FUNC HELP(
 			"(--)  invoke ci_handler with `finddevice \"/\"` and print result") },
@@ -491,6 +555,8 @@ static const Initentry init_pegasos2[] = {
 			"(--)  list the root directory of the first ATAPI ISO9660 volume") },
 	{ (Byte *)"test-aliases", f_test_aliases, INVALID_FCODE, F_NONE, T_FUNC HELP(
 			"(--)  print every entry under /aliases (cd, cdrom, hd, disk)") },
+	{ (Byte *)"test-ci-boot", f_test_ci_boot, INVALID_FCODE, F_NONE, T_FUNC HELP(
+			"(addr len --)  invoke ci_handler(\"boot\", <bootspec>) from Forth") },
 	{ NULL, NULL, INVALID_FCODE, F_NONE, T_FUNC HELP("") }
 };
 
