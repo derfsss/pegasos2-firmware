@@ -357,6 +357,76 @@ the firmware side of the spec-07 boot handoff is proven.
           call with a service-name pointer outside DRAM --
           separate issue; the firmware's FS + ELF loader +
           spec-07 handoff path is proven on a real image.)
+
+   amigaboot.of CI bring-up series (`97d102d`..`d59215f`):
+     CI panic / pool overlap (`97d102d`): amigaboot.of's PT_LOAD
+       region overlaps the firmware malloc pool at 0x00200000
+       (kernel + AOS4 boot images both link there). Relocated
+       SF malloc pool to 0x01100000. Decoupled
+       /memory/available reporting from pool placement so claim()
+       still hands out 0x200000..0x010FFFFF.
+     CI/8 (`a39db61`): two amigaboot.of crash classes fixed --
+       (a) FP-Unavailable interrupt at 0x800 because amigaboot
+       executes lfd/fmadd/frsp early and we did not set MSR[FP];
+       boot_kernel.S now ORs FP|IR|DR (0x2030). (b) CI dispatch
+       was overflowing C stack down past amigaboot's .bss into
+       its saved-CI-handler slot at 0x20F290; ci_entry.c ci_handler
+       grows a private 64 KiB stack via an asm shim that swaps r1
+       on entry/exit.
+     CI/9 + BAT/2 (`4719b60`): claim() returning addresses above
+       256 MiB DSI'd because the BAT trampoline only covered
+       BAT0 (0..256 MiB DRAM) + BAT1 (MV64361/PCI-IO/flash).
+       boot_kernel.S now programs four DRAM BATs covering
+       0..768 MiB so any -m 512+ claim() is translated.
+     `boot hd:0 amigaboot.of bootdevice=NAME` syntax (`6b5dcd5`):
+       SF's f_disklbl_load concatenates the loadargs ("amigaboot.of
+       bootdevice=DH0") into the FS reader's path argument, so
+       Amiga FS readers saw "/amigaboot.of bootdevice=DH0" and
+       reported "file not found". amiga_rdb.c now strips at the
+       first whitespace before recursing on the selected
+       partition. /chosen/bootargs still gets the full string
+       via SF's separate stash, so the OS sees `bootdevice=DH0`
+       downstream.
+     machine_go bootargs echo + CI_TRACE_LIMITED scaffold (`d59215f`):
+       machine_go now prints /chosen/bootpath + /chosen/bootargs
+       at handoff. CI_TRACE_LIMITED compile-time switch (off by
+       default) prints first 30 CI calls + first occurrence of
+       each new service + any non-zero rc -- 100x less log spam
+       than full CI_TRACE.
+
+   Current state (2026-04-25, paused for next agent):
+     ok boot hd:0 amigaboot.of bootdevice=DH0
+     elf32:   PT_LOAD #0 -> 0x200000 (61536/61536)
+     machine_go: e_entry=0x200000 r1=0x210060; transferring...
+       /chosen/bootpath = "/pci@80000000/ide@C,1/disk@0,0"
+       /chosen/bootargs = "amigaboot.of bootdevice=DH0"
+     [AmigaOS 4.x OpenFirmware Bootloader V53.21]
+     No bootable devices found. Press any key to return to firmware.
+
+   amigaboot.of now runs cleanly to its banner, parses /chosen/
+   bootargs, but cannot find a bootable device. Confirmed:
+     - File-load works (SFS\0 on RDB, 61536-byte ELF, ET_DYN).
+     - /chosen/bootargs reaches amigaboot.of verbatim (echo proves it).
+     - bootdevice=DH0 matches the actual RDB pb_DriveName on the
+       test disk (NOT the FS volume label "AmigaOS" -- formatter
+       sets that separately).
+   Open question for the next agent: amigaboot.of's RDB-partition
+   discovery via IEEE-1275 calls. Path forward:
+     1. Build with -DCI_TRACE_LIMITED=1, capture the boot log,
+        identify which CI services amigaboot.of uses to enumerate
+        partitions (likely open-dev with a partition path,
+        finddevice, getprop on /chosen, or call-method
+        get-partition-info).
+     2. If amigaboot.of expects /aliases/dh0 (or similar named
+        alias), expose RDB partitions through device-aliases so
+        bootdevice=DH0 resolves.
+     3. If amigaboot.of expects a children-of-disk device-tree
+        node per partition, add partition packages under
+        /pci@.../ide@.../disk@N pull from the RDB at install time.
+   The amigaboot.of binary is /amigaboot.of on hd0.qcow2 (62100
+   bytes per the previous session's analysis); disassembly of
+   the device-discovery functions (around 0x205F20 and 0x208438
+   per the prior session notes) is the next concrete step.
    cache, M4 ISO9660 FS + fs/fs dispatcher, M5 /aliases + test-
    media generation, M6 machine_go → machine_jump_os integration
    + `boot cd /test.elf` end-to-end, M7 NVRAM defaults +
