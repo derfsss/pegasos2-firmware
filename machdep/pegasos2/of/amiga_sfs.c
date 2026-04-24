@@ -210,16 +210,20 @@ read_block(Environ *e, Instance *disk, uLong part_loc, uInt block_num,
 		part_loc + (uLong)block_num * SFS_BSIZE, SFS_BSIZE, buf);
 }
 
-/* --- SFS checksum: sum of all 32-bit longwords in the block,
- * expected to equal zero when checksum field is correctly set.
- * Returns 1 if valid, 0 otherwise. */
+/* --- SFS checksum: the AROS header comment says "SUM of all LONGs
+ * in a block plus one, and then negated" -- i.e.
+ *     stored = -(sum_without_ck + 1)
+ * which implies sum_with_ck = -1 = 0xFFFFFFFF. Some formatters use
+ * the simpler sum_with_ck == 0 variant instead. We accept either
+ * so we work with volumes from every common SFS writer. Returns 1
+ * if the block's checksum is valid, 0 otherwise. */
 static int
 sfs_checksum_ok(const uByte *buf)
 {
 	uInt sum = 0;
 	for (uInt i = 0; i < SFS_BSIZE; i += 4)
 		sum += be32(buf + i);
-	return sum == 0 ? 1 : 0;
+	return (sum == 0u || sum == 0xFFFFFFFFu) ? 1 : 0;
 }
 
 /* --- Case-folded character compare ------------------------------ *
@@ -251,9 +255,14 @@ sfs_name_eq(const uByte *a, uInt alen, const uByte *b, uInt blen)
 
 /* --- Find the root block on an SFS volume ------------------------
  * The SFS spec puts two root blocks, one near the start of the
- * partition and one near the end. Block 0 is the boot block; the
- * primary root lives at block 1. We probe block 1 first, then
- * several likely secondary positions near the partition end.
+ * partition and one near the end. Different formatters disagree
+ * on whether "the start" means partition block 0 or block 1: the
+ * classic convention on Amiga floppies reserves block 0 as a
+ * boot block and places the root at block 1, but SFS volumes
+ * formatted as hard-disk partitions (AOS 4.x, MorphOS) commonly
+ * put the root at block 0 directly. Both layouts are valid SFS.
+ * We probe block 0 first -- the more common case on real HD
+ * installs -- and fall back to block 1.
  *
  * Valid root block identified by:
  *   - checksum passes (sum of longs == 0)
@@ -267,21 +276,27 @@ static Retcode
 sfs_open_volume(Environ *e, Instance *disk, uLong part_loc,
 		uInt dostype, uByte *buf)
 {
-	static const uInt primary_probe = 1;
+	static const uInt candidate_blocks[] = { 0u, 1u };
+	int found = 0;
+	uInt probe_blk = 0;
 
-	Retcode r = read_block(e, disk, part_loc, primary_probe, buf);
-	if (r != NO_ERROR)
-		return r;
-	if (!sfs_checksum_ok(buf))
-		return E_NO_FILESYS;
-	if (be32(buf + BH_OWNBLOCK) != primary_probe)
+	for (unsigned i = 0; i < sizeof candidate_blocks /
+	                         sizeof candidate_blocks[0]; i++) {
+		probe_blk = candidate_blocks[i];
+		Retcode r = read_block(e, disk, part_loc, probe_blk, buf);
+		if (r != NO_ERROR) continue;
+		if (!sfs_checksum_ok(buf)) continue;
+		if (be32(buf + BH_OWNBLOCK) != probe_blk) continue;
+		found = 1;
+		break;
+	}
+	if (!found)
 		return E_NO_FILESYS;
 
 	uInt version = be16(buf + RB_VERSION);
+	uInt blocksize = be32(buf + RB_BLOCKSIZE);
 	if (version == 0 || version > 99)
 		return E_NO_FILESYS;
-
-	uInt blocksize = be32(buf + RB_BLOCKSIZE);
 	if (blocksize != SFS_BSIZE)
 		return E_NO_FILESYS;
 
@@ -396,9 +411,15 @@ sfs_dir_lookup(Environ *e, uInt first_oc, const uByte *name, uInt namelen,
 	return E_NO_FILE;
 }
 
-/* --- Walk a '/'-separated path from the root. On success returns
- * NO_ERROR and fills *out_data + *out_size + *out_bits. Empty path
- * (or just "/") returns bits=OTYPE_DIR and data=root_objc_block. */
+/* --- Walk a '/'-separated path from the root. Returns a
+ * normalised view of the final component:
+ *   - for files  : *out_data = first-extent key, *out_size = byte size
+ *   - for dirs   : *out_data = firstdirblock (first OC BLCK, suitable
+ *                  for sfs_list_directory), *out_size unused
+ *   - for softlinks and hardlinks: OTYPE_LINK is set in *out_bits
+ *                  and data/size are the raw Stream Extension view
+ *
+ * Empty path (just "/") returns the root's first OC block. */
 static Retcode
 sfs_walk_path(Environ *e, const Byte *path, uInt *out_data, uInt *out_size,
 	      uByte *out_bits, uByte *scratch)
@@ -431,10 +452,21 @@ sfs_walk_path(Environ *e, const Byte *path, uInt *out_data, uInt *out_size,
 		if (r != NO_ERROR)
 			return r;
 
+		/* `data` == object's +12 field (hashtable for dirs,
+		 * first-extent key for files); `size` == +16 field
+		 * (firstdirblock for dirs, file byte size for files). */
+
 		if (*sep == '\0') {
-			*out_data  = data;
-			*out_size  = size;
-			*out_bits  = bits;
+			*out_bits = bits;
+			if (bits & OTYPE_DIR) {
+				/* Normalise: return firstdirblock so the
+				 * caller can walk the OC chain directly. */
+				*out_data = size;
+				*out_size = 0;
+			} else {
+				*out_data = data;
+				*out_size = size;
+			}
 			return NO_ERROR;
 		}
 
@@ -645,7 +677,6 @@ amiga_sfs(Environ *e, Filesys_action what, Instance *disk,
 	if ((dt & 0xFFFFFF00u) != SFS_DOSTYPE_MAGIC24)
 		return E_NO_FILESYS;
 
-	/* Try to open the volume at block 1. */
 	if (sfs_open_volume(e, disk, loc, dt, buf) != NO_ERROR)
 		return E_NO_FILESYS;
 
