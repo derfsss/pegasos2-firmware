@@ -192,7 +192,51 @@ ExtInt → CI Tier-B → SMBus):
    (exec_load + machine_jump_os). Pulled exe/exe.c into OF_SUBSET
    for the dispatcher. All 8 Boot 3/N hardening checks now apply
    to `boot cd` path too.
-   Downstream milestones planned: M7
+   Block 7/N (`9fa3456`): NVRAM boot defaults. g_nvram[] extended
+   with boot-device=cd, boot-file=/test.elf;1, boot-command=boot,
+   auto-boot?=false, auto-boot-timeout=1000. Bare `boot` at the
+   ok prompt now reaches KERNEL OK via the defaults. Auto-boot
+   path verified by temporarily flipping the default to true:
+   shows countdown, runs boot-command on expiry, boots cleanly.
+   Graceful failure when CD absent (no filesystem recognized -> ok).
+   Three-test matrix unchanged (2208/2694/2731).
+
+The 7-milestone block+FS arc (M1..M7) is now complete on QEMU
+for ISO9660 media. An AOS4 install CD can replace the synthetic
+test.iso and the full open-dev / load / go chain fires
+identically; amigaboot.of wouldn't run to completion because
+it expects M48T59 RTC + framebuffer services we've deferred, but
+the firmware side of the spec-07 boot handoff is proven.
+
+7. **Post-M7 filesystem expansion roadmap** (planning). User
+   requested FFS2 (DOS\7 LongName FFS) as the priority Amiga
+   filesystem for AOS4 boot; SFS-00 + PFS3 + FAT/exFAT as
+   nice-to-haves. Investigation of C:\msys64\home\rich_\sdk
+   produced:
+     - hardblocks.h: complete RDB structure spec (RigidDiskBlock,
+       PartitionBlock, FileSysHeaderBlock, LoadSegBlock, etc.)
+     - dos.h: DOS\0..\7 ID codes documented
+     - Examples/FastFileSystem: plugin API only, not reader
+   Public references identified: Ralph Babel's Amiga Guru Book
+   (ch. 15 FFS format), Commodore AmigaDOS Technical Reference
+   Manual, John Hendrikx's SFS spec PDF, Microsoft FAT32/exFAT
+   specs. Source-only references (GPL/LGPL -- read to understand,
+   don't paste): tonioni/pfs3aio (PFS3), aminet SFS sources,
+   AROS afs.handler, adflib. BSD source trees checked: no help
+   (Berkeley FFS != Amiga FFS despite the name; BSDs have no
+   Amiga FS support).
+   Planned arcs:
+     Arc FS-A PC filesystems (~1 day): pull SF's dosfat.c +
+       ext2fs.c; unblocks `boot hd /vmlinux`.
+     Arc FS-B Amiga filesystems (FFS2-first per user):
+       B1 RDB partition parser (~1 day, prerequisite)
+       B2 OFS/FFS/Intl/LongName reader covering DOS\0..\3,\6,\7
+          with DOS\7 (FFS2) as verification target (~2.5 days)
+       B3 DirCache DOS\4/\5 (~0.5 day, nice-to-have)
+       B4 SFS-00 reader (~3-5 days, nice-to-have)
+       B5 PFS3 reader (~5-7 days, nice-to-have; highest risk
+          due to GPL-source-only references)
+     Arc FS-C exFAT (~2-3 days, nice-to-have).
    cache, M4 ISO9660 FS + fs/fs dispatcher, M5 /aliases + test-
    media generation, M6 machine_go → machine_jump_os integration
    + `boot cd /test.elf` end-to-end, M7 NVRAM defaults +
@@ -270,6 +314,7 @@ enabled in the default build.
 ## Commit history (as of this writing)
 
 ```
+9fa3456  Block 7/N: NVRAM boot defaults -- bare `boot` + auto-boot work
 c6a1fc5  Block 6/N: boot cd /test.elf end-to-end -- full spec-07 flow works
 817aade  Block 5/N: /aliases/cd + /aliases/hd + test-iso Makefile target
 73ca06c  Block 4/N: ISO9660 filesystem + test-iso-ls lists AOS4 CD root
