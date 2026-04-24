@@ -267,10 +267,30 @@ the firmware side of the spec-07 boot handoff is proven.
           Gotcha: `load hd:0,/test.elf` splices boot-file onto
           s->args and breaks name hashing -- use `load hd:0
           /test.elf` (space) or `load hd:0` with boot-file set.
-       B3 DirCache DOS\4/\5 (~0.5 day, nice-to-have)
-       B4 SFS-00 reader (~3-5 days, nice-to-have)
-       B5 PFS3 reader (~5-7 days, nice-to-have; highest risk
-          due to GPL-source-only references)
+       B3 DirCache DOS\4/\5 (DONE) -- amiga_ffs.c's hash-table
+          walk already ignores DC blocks; the only missing piece
+          was Intl folding on DOS\4 (bit 2 set, bit 1 clear).
+          Fixed to set is_intl whenever DOSTYPE_DC_BIT is set.
+          mkrdb.py generalised with --dostype N (N=0..7).
+       B4 SFS (DONE) -- amiga_sfs.c covers SFS\0 (classic) and
+          SFS\2 (AOS4). Clean-room from AROS LGPL blockstructure.h
+          / objects.h / btreenodes.h / bitmap.h used as on-disk
+          format spec only (no code copy). Linear ObjectContainer
+          walk for dir lookup, extent B+-tree traversal for file
+          data. Softlinks recognised but not followed. Also
+          hardened amiga_ffs.c dispatch: early reject based on
+          'DOS\' boot-block magic + short-circuit probe loop on
+          first read error, so SFS/PFS partitions don't produce
+          ATA-timeout spam when amiga_ffs probes past the end.
+          mkrdb.py --sfs N (N=0 or 2) generator.
+       B5 PFS3 (DONE) -- amiga_pfs3.c covers PFS\1, PFS\2, AFS\1.
+          Clean-room from tonioni/pfs3aio's blocks.h + struct.h
+          (BSD 4-clause, used as on-disk format spec only, no
+          code copy -- advertising clause therefore does not
+          propagate). 3-level anode lookup (rootblock indexblocks
+          -> IB anodeblocks -> AB anodes). Anode-chain directory
+          walk + file read. Small-disk variant only. mkrdb.py
+          --pfs N (N=1 or 2) generator.
      Arc FS-C exFAT (~2-3 days, nice-to-have).
    cache, M4 ISO9660 FS + fs/fs dispatcher, M5 /aliases + test-
    media generation, M6 machine_go → machine_jump_os integration
