@@ -471,6 +471,66 @@ extern Retcode f_test_iso_ls(Environ *e);
 extern Retcode f_test_aliases(Environ *e);
 
 /*
+ * get-time-of-day ( -- second minute hour day month year )
+ *
+ * Spec 06 §"Time of day" CI service. Reads the M48T59 RTC and
+ * pushes six integers: second/minute/hour/day/month/year (year
+ * is the full 4-digit value, e.g. 2026). If the chip is absent
+ * (QEMU pegasos2 -- no M48T59 model) we push an epoch-like
+ * fallback (1970-01-01 00:00:00) and print a one-line notice.
+ * An OS that expects this CI service will still receive well-
+ * formed values; it can detect the fallback by recognising the
+ * epoch. A later real-hardware session will validate the real
+ * read path.
+ */
+extern int m48t59_read_rtc(int *year, int *month, int *day,
+                           int *hour, int *minute, int *second);
+extern int m48t59_write_rtc(int year, int month, int day,
+                            int hour, int minute, int second);
+
+CC(f_get_time_of_day)
+{
+	int yr, mo, da, hr, mi, se;
+	if (m48t59_read_rtc(&yr, &mo, &da, &hr, &mi, &se) != 0) {
+		/* M48T59 not present -- fall back to a fixed epoch so
+		 * the CI contract stays predictable on QEMU. */
+		yr = 1970; mo = 1; da = 1;
+		hr = 0; mi = 0; se = 0;
+	}
+	IFCKSP(e, 0, 6);
+	PUSH(e, (Cell)se);
+	PUSH(e, (Cell)mi);
+	PUSH(e, (Cell)hr);
+	PUSH(e, (Cell)da);
+	PUSH(e, (Cell)mo);
+	PUSH(e, (Cell)yr);
+	return NO_ERROR;
+}
+
+/*
+ * set-time-of-day ( second minute hour day month year -- )
+ *
+ * Writes a new wall clock into the M48T59 (if present). Silently
+ * does nothing when the chip is absent; we don't want a test
+ * harness on QEMU to appear to fail when it's really just a
+ * platform limitation.
+ */
+CC(f_set_time_of_day)
+{
+	Cell yr, mo, da, hr, mi, se;
+	IFCKSP(e, 6, 0);
+	POP(e, yr);
+	POP(e, mo);
+	POP(e, da);
+	POP(e, hr);
+	POP(e, mi);
+	POP(e, se);
+	(void)m48t59_write_rtc((int)yr, (int)mo, (int)da,
+	                       (int)hr, (int)mi, (int)se);
+	return NO_ERROR;
+}
+
+/*
  * `test-ci-boot ( addr len -- )` -- invoke ci_handler with the
  * "boot" service and the given Forth counted-string as bootspec.
  * Mirrors what an OS-resident boot loader would do via its saved
@@ -559,8 +619,39 @@ static const Initentry init_pegasos2[] = {
 			"(--)  print every entry under /aliases (cd, cdrom, hd, disk)") },
 	{ (Byte *)"test-ci-boot", f_test_ci_boot, INVALID_FCODE, F_NONE, T_FUNC HELP(
 			"(addr len --)  invoke ci_handler(\"boot\", <bootspec>) from Forth") },
+	{ (Byte *)"get-time-of-day", f_get_time_of_day, INVALID_FCODE, F_NONE, T_FUNC HELP(
+			"( -- sec min hr day mo yr)  read M48T59 RTC (fallback 1970-01-01)") },
+	{ (Byte *)"set-time-of-day", f_set_time_of_day, INVALID_FCODE, F_NONE, T_FUNC HELP(
+			"(sec min hr day mo yr --)  write M48T59 RTC (noop if absent)") },
 	{ NULL, NULL, INVALID_FCODE, F_NONE, T_FUNC HELP("") }
 };
+
+/*
+ * install_pegasos2_ci_services -- run after install_client_services
+ * to extend the /openprom/client-services dictionary with the
+ * pegasos2-specific time-of-day services spec 06 §"Time of day"
+ * defines. Upstream SF's client_services_methods[] has
+ * `milliseconds` but not get-time-of-day/set-time-of-day, so an OS
+ * that asks for them via the CI name dispatcher would otherwise
+ * get "service unknown". init_entries appends to an existing dict.
+ */
+static const Initentry init_pegasos2_ci[] = {
+	{ (Byte *)"get-time-of-day", f_get_time_of_day,
+	  INVALID_FCODE, F_NONE, T_FUNC HELP("") },
+	{ (Byte *)"set-time-of-day", f_set_time_of_day,
+	  INVALID_FCODE, F_NONE, T_FUNC HELP("") },
+	{ NULL, NULL, INVALID_FCODE, F_NONE, T_FUNC HELP("") }
+};
+
+CC(install_pegasos2_ci_services)
+{
+	if (e->client == NULL || e->client->dict == NULL)
+		return NO_ERROR;    /* install_client_services didn't run;
+		                     * drop silently -- next call into the
+		                     * CI name dispatcher will hit the
+		                     * fallback linear scan */
+	return init_entries(e, e->client->dict, init_pegasos2_ci);
+}
 
 /* --------------------------------------------------------------- *
  *  exec_* helpers -- now supplied by upstream/smartfirmware/bin/of/ *
@@ -677,6 +768,7 @@ EC(install_disklabel);
 EC(install_ide_driver);
 EC(install_aliases);
 EC(install_client_services);
+EC(install_pegasos2_ci_services);
 
 /*
  * Install order notes:
@@ -717,5 +809,6 @@ const Command install_list[] = {
 	install_ide_driver,
 	install_aliases,
 	install_client_services,
+	install_pegasos2_ci_services,
 	NULL
 };

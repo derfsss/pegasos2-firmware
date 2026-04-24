@@ -40,8 +40,50 @@
 #define M48T59_SYSTEM_OFFSET  0x0200u
 #define M48T59_SYSTEM_SIZE    0x0400u /* 1 KiB */
 
+/*
+ * RTC register block at the tail of the 8 KiB window (last 8 bytes).
+ * Stored in packed BCD; the ST M48T59 datasheet lays them out as:
+ *
+ *   0x1FF8  Control  W=bit7 lock-write; R=bit6 lock-read; CAL[5..0]
+ *   0x1FF9  Seconds  ST=bit7 oscillator stop; SEC=bits 6..0 (BCD 00..59)
+ *   0x1FFA  Minutes  bits 6..0 (BCD 00..59)
+ *   0x1FFB  Hours    bits 5..0 (BCD 00..23)
+ *   0x1FFC  Day-of-week  bits 2..0 (1..7). Bit 6 = FT (freq test).
+ *   0x1FFD  Date         bits 5..0 (BCD 01..31)
+ *   0x1FFE  Month        bits 4..0 (BCD 01..12)
+ *   0x1FFF  Year         bits 7..0 (BCD 00..99)
+ *
+ * There is no hardware century field; firmware/OS convention treats
+ * year<70 as 20xx and year>=70 as 19xx. AmigaOS 4's default is 20xx.
+ */
+#define M48T59_RTC_CONTROL    0x1FF8u
+#define M48T59_RTC_SECONDS    0x1FF9u
+#define M48T59_RTC_MINUTES    0x1FFAu
+#define M48T59_RTC_HOURS      0x1FFBu
+#define M48T59_RTC_DOW        0x1FFCu
+#define M48T59_RTC_DATE       0x1FFDu
+#define M48T59_RTC_MONTH      0x1FFEu
+#define M48T59_RTC_YEAR       0x1FFFu
+
+#define M48T59_CTRL_WRITE_LOCK   0x80u   /* set during a write burst */
+#define M48T59_CTRL_READ_LOCK    0x40u   /* set during a read burst */
+#define M48T59_SECONDS_STOP      0x80u   /* ST -- oscillator disabled */
+
 /* Byte read/write via the two-register address-indexed protocol. */
 uint8_t m48t59_read_byte(unsigned offset);
 void    m48t59_write_byte(unsigned offset, uint8_t val);
+
+/*
+ * Read / write the full wall-clock time. Returns 0 on success,
+ * -1 if no M48T59 responds (every RTC register reads back 0xFF,
+ * the typical signature of an absent or power-off chip -- this is
+ * what happens on QEMU pegasos2, which wires no M48T59 model at
+ * all). Years are returned as the full 4-digit value (e.g. 2026),
+ * with the 70+ heuristic above applied to the BCD register.
+ */
+int m48t59_read_rtc(int *year, int *month, int *day,
+                    int *hour, int *minute, int *second);
+int m48t59_write_rtc(int year, int month, int day,
+                     int hour, int minute, int second);
 
 #endif /* M48T59_H */
