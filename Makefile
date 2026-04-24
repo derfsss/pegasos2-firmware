@@ -283,7 +283,8 @@ OF_MACHDEP_OBJS := \
     $(BUILD)/of_ide_driver.o \
     $(BUILD)/of_amiga_rdb.o \
     $(BUILD)/of_amiga_ffs.o \
-    $(BUILD)/of_amiga_sfs.o
+    $(BUILD)/of_amiga_sfs.o \
+    $(BUILD)/of_amiga_pfs3.o
 
 $(BUILD)/of_platform.o: $(SF_MACHDEP)/platform.c | $(BUILD)
 	$(CC) $(SF_CFLAGS) -I$(MACHDEP) -I$(SF)/fs -c $< -o $@
@@ -327,6 +328,15 @@ $(BUILD)/of_amiga_ffs.o: $(SF_MACHDEP)/amiga_ffs.c | $(BUILD)
 # format via struct offsets (format spec, not code). Linear dir
 # walk + extent B+-tree traversal for file data.
 $(BUILD)/of_amiga_sfs.o: $(SF_MACHDEP)/amiga_sfs.c | $(BUILD)
+	$(CC) $(SF_CFLAGS) -I$(SF)/fs -c $< -o $@
+
+# Arc FS-B, Block 5: Professional File System 3 (PFS\1 / PFS\2 /
+# AFS\1) readonly reader. Clean-room from tonioni/pfs3aio's
+# blocks.h + struct.h (BSD 4-clause; used as format spec only, no
+# code copy -- so the advertising clause does not propagate).
+# Anode-chain based file reading, 3-level indexblock->anodeblock
+# lookup, small-disk rootblock variant only.
+$(BUILD)/of_amiga_pfs3.o: $(SF_MACHDEP)/amiga_pfs3.c | $(BUILD)
 	$(CC) $(SF_CFLAGS) -I$(SF)/fs -c $< -o $@
 
 # Append OF to the firmware link target. phase1_c_main() calls SF's

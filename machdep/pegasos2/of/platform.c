@@ -42,6 +42,7 @@ extern Filesys g_dos_partition;    /* upstream/fs/dospart.c */
 extern Filesys g_amiga_rdb;        /* machdep/pegasos2/of/amiga_rdb.c */
 extern Filesys g_amiga_ffs;        /* machdep/pegasos2/of/amiga_ffs.c */
 extern Filesys g_amiga_sfs;        /* machdep/pegasos2/of/amiga_sfs.c */
+extern Filesys g_amiga_pfs3;       /* machdep/pegasos2/of/amiga_pfs3.c */
 extern Filesys g_iso9660_fs;       /* upstream/fs/iso9660.c */
 extern Filesys g_dos_fat;          /* upstream/fs/dosfat.c */
 extern Filesys g_linux_ext2fs;     /* upstream/fs/ext2fs.c */
@@ -54,6 +55,7 @@ Filesys *g_filesys[] = {
 	/* Whole-disk / post-partition FS readers. */
 	&g_amiga_ffs,                    /* OFS/FFS/Intl/LNFS (DOS\0..\3,\6,\7) */
 	&g_amiga_sfs,                    /* SmartFileSystem (SFS\0, SFS\2) */
+	&g_amiga_pfs3,                   /* PFS3 (PFS\1, PFS\2, AFS\1) */
 	&g_iso9660_fs,
 	&g_dos_fat,
 	&g_linux_ext2fs,

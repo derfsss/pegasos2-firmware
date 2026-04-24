@@ -37,6 +37,8 @@ DOSTYPE_FFS2 = 0x44_4F_53_07 # 'DOS\7' -- FFS + Intl + LongName ("FFS2")
 DOSTYPE_FFSDC = 0x44_4F_53_05 # 'DOS\5' -- FFS + DirCache
 DOSTYPE_SFS0 = 0x53_46_53_00 # 'SFS\0' -- classic SmartFileSystem
 DOSTYPE_SFS2 = 0x53_46_53_02 # 'SFS\2' -- AmigaOS 4 SFS
+DOSTYPE_PFS1 = 0x50_46_53_01 # 'PFS\1' -- Professional File System 3
+DOSTYPE_PFS2 = 0x50_46_53_02 # 'PFS\2' -- PFS3, AOS4 era
 
 # --- Amiga FFS on-disk constants (mirrors machdep/pegasos2/of/amiga_ffs.c) ---
 T_HEADER     = 2
@@ -529,13 +531,195 @@ def build_sfs_filesystem(payload, partition_blocks, dostype=DOSTYPE_SFS2):
     return blocks
 
 
+# --- PFS3 image builders ---------------------------------------------------
+#
+# Layout inside the partition (all 512-byte blocks):
+#   block 0  bootblock1 -- disktype 'PFS\<n>' at +0
+#   block 1  bootblock2 -- same disktype
+#   block 2  rootblock (no checksum; cache-coherency via datestamp)
+#   block 3  indexblock (IBLKID='IB') -- index[0] = block 4
+#   block 4  anodeblock (ABLKID='AB') -- 41 anodes, 12 bytes each,
+#            nodes[5]=rootdir, nodes[6]=file
+#   block 5  rootdir dirblock (DBLKID='DB') with one direntry for
+#            test.elf (anode=6, fsize=<len>)
+#   block 6+ contiguous data blocks for test.elf
+
+PFS_BOOTBLOCK_1   = 0
+PFS_BOOTBLOCK_2   = 1
+PFS_ROOTBLOCK     = 2
+PFS_INDEXBLOCK    = 3
+PFS_ANODEBLOCK    = 4
+PFS_ROOTDIRBLOCK  = 5
+PFS_DATA_START    = 6
+
+PFS_ANODE_ROOTDIR = 5
+PFS_ANODE_FILE    = 6
+
+PFS_ID_DB = 0x4442  # 'DB'
+PFS_ID_AB = 0x4142  # 'AB'
+PFS_ID_IB = 0x4942  # 'IB'
+
+PFS_ST_FILE = 0xFD  # (BYTE)-3
+
+
+def build_pfs_boot_block(dostype):
+    blk = bytearray(BLOCK_SIZE)
+    struct.pack_into(">I", blk, 0, dostype)
+    return bytes(blk)
+
+
+def build_pfs_root_block(dostype, firstreserved, lastreserved, disksize,
+                           indexblock_bnr):
+    """Small-disk variant: idx.small.indexblocks[0..98] at offset 116.
+    Reserved_blksize = 512 (matching the disk sector)."""
+    blk = bytearray(BLOCK_SIZE)
+    # disktype
+    struct.pack_into(">I", blk, 0, dostype)
+    # options: MODE_HARDDISK
+    struct.pack_into(">I", blk, 4, 0x0001)
+    # datestamp
+    struct.pack_into(">I", blk, 8, 1)
+    # creationday/minute/tick (leave zero)
+    # protection (leave zero)
+    # diskname BSTR at +20 ("TEST")
+    blk[20] = 4
+    blk[21:25] = b"TEST"
+    # lastreserved, firstreserved
+    struct.pack_into(">I", blk, 52, lastreserved)
+    struct.pack_into(">I", blk, 56, firstreserved)
+    # reserved_free (not used by our reader but valid)
+    struct.pack_into(">I", blk, 60, 0)
+    # reserved_blksize
+    struct.pack_into(">H", blk, 64, BLOCK_SIZE)
+    # rblkcluster = 1 sector per reserved block
+    struct.pack_into(">H", blk, 66, 1)
+    # blocksfree (not enforced on read)
+    struct.pack_into(">I", blk, 68, 0)
+    # alwaysfree
+    struct.pack_into(">I", blk, 72, 0)
+    # roving_ptr / deldir leave zero
+    # disksize
+    struct.pack_into(">I", blk, 84, disksize)
+    # extension BLCK = 0 (no extension block for small test)
+    # idx.small.indexblocks[0] at +116
+    struct.pack_into(">I", blk, 116, indexblock_bnr)
+    return bytes(blk)
+
+
+def build_pfs_indexblock(anodeblock_bnr):
+    """IBLKID = 'IB' at +0. Has index[N] BLCK pointers from +12."""
+    blk = bytearray(BLOCK_SIZE)
+    struct.pack_into(">H", blk, 0, PFS_ID_IB)
+    # datestamp at +4, seqnr at +8 -- leave zero
+    # index[0] = anodeblock
+    struct.pack_into(">I", blk, 12, anodeblock_bnr)
+    return bytes(blk)
+
+
+def build_pfs_anodeblock(anodes):
+    """anodes: dict {anodenr: (clustersize, blocknr, next)}.
+    Anode fields at offset 16 + i*12: clustersize (4), blocknr (4),
+    next (4). 41 anodes fit in a 512-byte block."""
+    blk = bytearray(BLOCK_SIZE)
+    struct.pack_into(">H", blk, 0, PFS_ID_AB)
+    # datestamp, seqnr, not_used_2 zero
+    for anr, (cl, bnr, nxt) in anodes.items():
+        assert 0 <= anr < 41, "anodenr out of range for 512B anodeblock"
+        off = 16 + anr * 12
+        struct.pack_into(">I", blk, off + 0, cl)
+        struct.pack_into(">I", blk, off + 4, bnr)
+        struct.pack_into(">I", blk, off + 8, nxt)
+    return bytes(blk)
+
+
+def build_pfs_rootdir_block(rootdir_anode, file_name, file_anode, file_size):
+    """DBLKID='DB' at +0. anodenr (THIS dir's anode) at +12, parent at
+    +16. direntries start at +20."""
+    blk = bytearray(BLOCK_SIZE)
+    struct.pack_into(">H", blk, 0, PFS_ID_DB)
+    struct.pack_into(">I", blk, 12, rootdir_anode)   # own anodenr
+    struct.pack_into(">I", blk, 16, 0)               # parent = 0 (root)
+
+    # One direntry for test.elf.
+    nm = file_name.encode('ascii')
+    nlen = len(nm)
+    # Record size: 18 (header) + nlen + 1 (comment_length=0) + pad-to-even
+    rec_size = 18 + nlen + 1
+    if rec_size & 1:
+        rec_size += 1
+    assert rec_size <= 255, "direntry too long"
+
+    off = 20
+    blk[off + 0] = rec_size            # next
+    blk[off + 1] = PFS_ST_FILE         # type = -3 (file)
+    struct.pack_into(">I", blk, off + 2, file_anode)
+    struct.pack_into(">I", blk, off + 6, file_size)
+    # creationday/min/tick leave zero
+    blk[off + 16] = 0                  # protection
+    blk[off + 17] = nlen               # nlength
+    blk[off + 18 : off + 18 + nlen] = nm
+    blk[off + 18 + nlen] = 0           # comment length
+
+    # Sentinel: next direntry's `next` byte = 0 (end-of-entries).
+    # The record-size padding already leaves zero after our entry.
+    return bytes(blk)
+
+
+def build_pfs_filesystem(payload, partition_blocks, dostype=DOSTYPE_PFS2):
+    """Return dict {block_idx: 512 bytes} describing a minimal PFS3
+    filesystem containing one file 'test.elf'=payload. payload is
+    laid out as a single contiguous extent starting at PFS_DATA_START."""
+    assert (dostype & 0xFFFFFF00) in (0x50465300, 0x41465300), \
+        "dostype must be 'PFS\\N' or 'AFS\\N'"
+    blocks = {}
+
+    num_data = (len(payload) + BLOCK_SIZE - 1) // BLOCK_SIZE
+    last_data_blk = PFS_DATA_START + num_data - 1
+    assert last_data_blk < partition_blocks, \
+        f"PFS layout needs block {last_data_blk} < partition size {partition_blocks}"
+
+    blocks[PFS_BOOTBLOCK_1] = build_pfs_boot_block(dostype)
+    blocks[PFS_BOOTBLOCK_2] = build_pfs_boot_block(dostype)
+
+    blocks[PFS_ROOTBLOCK] = build_pfs_root_block(
+        dostype=dostype,
+        firstreserved=PFS_INDEXBLOCK,
+        lastreserved=PFS_ROOTDIRBLOCK,
+        disksize=partition_blocks,
+        indexblock_bnr=PFS_INDEXBLOCK,
+    )
+
+    blocks[PFS_INDEXBLOCK] = build_pfs_indexblock(PFS_ANODEBLOCK)
+
+    blocks[PFS_ANODEBLOCK] = build_pfs_anodeblock({
+        PFS_ANODE_ROOTDIR: (1, PFS_ROOTDIRBLOCK, 0),
+        PFS_ANODE_FILE:    (num_data, PFS_DATA_START, 0),
+    })
+
+    blocks[PFS_ROOTDIRBLOCK] = build_pfs_rootdir_block(
+        rootdir_anode=PFS_ANODE_ROOTDIR,
+        file_name="test.elf",
+        file_anode=PFS_ANODE_FILE,
+        file_size=len(payload),
+    )
+
+    for i in range(num_data):
+        start = i * BLOCK_SIZE
+        chunk = payload[start:start + BLOCK_SIZE]
+        if len(chunk) < BLOCK_SIZE:
+            chunk = chunk + b"\x00" * (BLOCK_SIZE - len(chunk))
+        blocks[PFS_DATA_START + i] = chunk
+
+    return blocks
+
+
 def main():
     args = sys.argv[1:]
     if not args:
-        print("usage: mkrdb.py OUT.img [BLOCKS] [--elf ELF] "
-              "[--dostype N]   (N = 0..7 for DOS\\N, default 7 = FFS2)\n"
-              "                                [--sfs N]       "
-              "(N = 0 or 2 for SFS\\N)",
+        print("usage: mkrdb.py OUT.img [BLOCKS] [--elf ELF]\n"
+              "        [--dostype N]  (N=0..7, DOS\\N, default 7 = FFS2)\n"
+              "        [--sfs N]      (N=0 or 2, SFS\\N)\n"
+              "        [--pfs N]      (N=1 or 2, PFS\\N -- PFS3 family)",
               file=sys.stderr)
         sys.exit(1)
 
@@ -543,6 +727,7 @@ def main():
     elf_path = None
     dt_low = 7   # default DOS\7 (FFS2)
     sfs_ver = None
+    pfs_ver = None
     remaining = []
     it = iter(args)
     for a in it:
@@ -554,18 +739,25 @@ def main():
         elif a == "--sfs":
             sfs_ver = int(next(it))
             assert sfs_ver in (0, 2), "--sfs must be 0 or 2"
+        elif a == "--pfs":
+            pfs_ver = int(next(it))
+            assert pfs_ver in (1, 2), "--pfs must be 1 or 2"
         else:
             remaining.append(a)
     blocks = int(remaining[0]) if remaining else DEFAULT_BLKS
 
-    if sfs_ver is not None:
+    if pfs_ver is not None:
+        dostype = 0x50_46_53_00 | pfs_ver        # 'PFS\<N>'
+        label   = f"PFS\\{pfs_ver}"
+    elif sfs_ver is not None:
         dostype = 0x53_46_53_00 | sfs_ver        # 'SFS\<N>'
         label   = f"SFS\\{sfs_ver}"
     else:
         dostype = 0x44_4F_53_00 | dt_low         # 'DOS\<N>'
         label   = f"DOS\\{dt_low}"
 
-    is_lnfs = (sfs_ver is None and (dt_low == 6 or dt_low == 7))
+    is_lnfs = (sfs_ver is None and pfs_ver is None
+               and (dt_low == 6 or dt_low == 7))
 
     if elf_path:
         with open(elf_path, "rb") as fh:
@@ -585,7 +777,10 @@ def main():
     part_offset       = 2 * bytes_per_cyl
     partition_blocks  = (total_cyls - 2) * SURFACES * BLKS_PER_TRK
 
-    if sfs_ver is not None:
+    if pfs_ver is not None:
+        fs_blocks = build_pfs_filesystem(payload, partition_blocks,
+                                          dostype=dostype)
+    elif sfs_ver is not None:
         fs_blocks = build_sfs_filesystem(payload, partition_blocks,
                                            dostype=dostype)
     else:
