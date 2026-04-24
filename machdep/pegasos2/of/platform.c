@@ -98,6 +98,7 @@ CC(machine_init_program)    { (void)e; return NO_ERROR; }
 CC(machine_go)              { (void)e; return NO_ERROR; }
 CC(machine_init_load)       { (void)e; return NO_ERROR; }
 
+
 /* --------------------------------------------------------------- *
  *  test-ci -- synthetic IEEE-1275 client-interface smoke test      *
  * --------------------------------------------------------------- */
@@ -279,6 +280,7 @@ CC(f_heap_info)
 extern Retcode f_boot_kernel(Environ *e);
 extern Retcode f_test_boot(Environ *e);
 extern Retcode f_test_boot_bad(Environ *e);
+extern Retcode f_ls_pci(Environ *e);
 
 static const Initentry init_pegasos2[] = {
 	{ (Byte *)"test-ci", f_test_ci, INVALID_FCODE, F_NONE, T_FUNC HELP(
@@ -293,6 +295,8 @@ static const Initentry init_pegasos2[] = {
 			"(addr len --)  publish string on /chosen/bootargs (spec 07 §AOS4)") },
 	{ (Byte *)"heap-info", f_heap_info, INVALID_FCODE, F_NONE, T_FUNC HELP(
 			"(--)  print SF malloc-pool bounds + spec 07 load-address compliance") },
+	{ (Byte *)"ls-pci", f_ls_pci, INVALID_FCODE, F_NONE, T_FUNC HELP(
+			"(--)  walk /pci@80000000 and /pci@c0000000 and print each child device") },
 	{ NULL, NULL, INVALID_FCODE, F_NONE, T_FUNC HELP("") }
 };
 
@@ -436,6 +440,7 @@ EC(init_options_from_nvram);
 EC(install_powerpc_cpu);
 EC(install_display);
 EC(install_failsafe);
+EC(install_pci_tree);
 
 const Command install_list[] = {
 	install_root,
@@ -445,5 +450,6 @@ const Command install_list[] = {
 	install_powerpc_cpu,
 	install_display,
 	install_failsafe,
+	install_pci_tree,
 	NULL
 };

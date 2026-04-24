@@ -82,6 +82,18 @@
 #define STANDARD_REV       0x00030000   /* IEEE-1275 version 3.0 */
 
 /*
+ * Pegasos2 CHRP root uses 1 address cell + 1 size cell (matches
+ * QEMU's pegasos2.dts). We do NOT define ROOT_ADDRESS_CELLS because
+ * SF's root.c uses it to enable a dozen mmu_* / dma-* methods that
+ * require machdep-provided MMU hooks we haven't implemented (no
+ * OF-managed MMU on Pegasos2 yet). Instead, install_pci_tree writes
+ * #address-cells=1 and #size-cells=1 directly onto the root package
+ * at boot; root.c then defaults to an unimplemented-method error
+ * for the MMU services which is the correct behaviour here (no
+ * client expects them on Pegasos2).
+ */
+
+/*
  * Placeholder MAC address. On real HW this would come from the SROM
  * of the on-board Marvell SysKonnect GbE; on QEMU the rtl8139 -netdev
  * derives one. We ship a visible-as-bogus default so it's obvious
