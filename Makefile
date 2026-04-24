@@ -284,7 +284,8 @@ OF_MACHDEP_OBJS := \
     $(BUILD)/of_amiga_rdb.o \
     $(BUILD)/of_amiga_ffs.o \
     $(BUILD)/of_amiga_sfs.o \
-    $(BUILD)/of_amiga_pfs3.o
+    $(BUILD)/of_amiga_pfs3.o \
+    $(BUILD)/of_fs_exfat.o
 
 $(BUILD)/of_platform.o: $(SF_MACHDEP)/platform.c | $(BUILD)
 	$(CC) $(SF_CFLAGS) -I$(MACHDEP) -I$(SF)/fs -c $< -o $@
@@ -337,6 +338,13 @@ $(BUILD)/of_amiga_sfs.o: $(SF_MACHDEP)/amiga_sfs.c | $(BUILD)
 # Anode-chain based file reading, 3-level indexblock->anodeblock
 # lookup, small-disk rootblock variant only.
 $(BUILD)/of_amiga_pfs3.o: $(SF_MACHDEP)/amiga_pfs3.c | $(BUILD)
+	$(CC) $(SF_CFLAGS) -I$(SF)/fs -c $< -o $@
+
+# Arc FS-C: exFAT readonly reader. Clean-room from Microsoft's
+# public 2019 spec at learn.microsoft.com/windows/win32/fileio/
+# exfat-specification. Boot-sector parse, FAT chain walk, 32-byte
+# directory-entry sets (0x85 File + 0xC0 Stream + 0xC1 FileName).
+$(BUILD)/of_fs_exfat.o: $(SF_MACHDEP)/fs_exfat.c | $(BUILD)
 	$(CC) $(SF_CFLAGS) -I$(SF)/fs -c $< -o $@
 
 # Append OF to the firmware link target. phase1_c_main() calls SF's
