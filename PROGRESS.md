@@ -160,7 +160,22 @@ ExtInt → CI Tier-B → SMBus):
    (`Pegasos2InstallCD-53.54.iso`): volume ID "AmigaOS 4.1 Final
    Edition", 10+ entries including `amigaboot.of` at 36644 bytes
    (the M6 target) and `bootloader_prepare`.
-   Downstream milestones planned: M5
+   Block 5/N (`817aade`): device aliases + test-ISO target. Adds
+   install_aliases to install_list that walks the IDE children and
+   writes /aliases/cd + /aliases/cdrom (first ATAPI) and
+   /aliases/hd + /aliases/disk (first ATA) as string properties.
+   /aliases node is pre-created by SF's install_packages before
+   install_list runs, so no package installer needed. Verified
+   alias expansion via SF's resolve_path: `ls cd` and
+   `list-files cd /` both resolve to /pci@80000000/ide@C,1/cd@1,0
+   and exercise the full open-dev + iso9660 chain. New test-iso
+   Makefile target: stages test_kernel.elf into build/iso_stage/
+   and produces build/test.iso (~440 KB ISO9660+Joliet+Rock Ridge)
+   via genisoimage; invoked on demand (`make test-iso`) for M6's
+   end-to-end boot test. Gotcha recorded: install-time diagnostic
+   uart_puts calls are ~2 ms/char on QEMU, ballooning probe
+   runtime from 5s to >25s; looked like a hang until stripped.
+   Downstream milestones planned: M6
    cache, M4 ISO9660 FS + fs/fs dispatcher, M5 /aliases + test-
    media generation, M6 machine_go → machine_jump_os integration
    + `boot cd /test.elf` end-to-end, M7 NVRAM defaults +
@@ -238,6 +253,7 @@ enabled in the default build.
 ## Commit history (as of this writing)
 
 ```
+817aade  Block 5/N: /aliases/cd + /aliases/hd + test-iso Makefile target
 73ca06c  Block 4/N: ISO9660 filesystem + test-iso-ls lists AOS4 CD root
 287c96a  Block 3/N: block reads via deblocker -- CD001 at LBA 16 verified
 a79e0f7  Block 2/N: VT8231 PCI IDE driver attaches + IDENTIFY works
