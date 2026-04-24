@@ -39,12 +39,17 @@
  *  terminator required.                                            *
  * --------------------------------------------------------------- */
 extern Filesys g_dos_partition;    /* upstream/fs/dospart.c */
+extern Filesys g_amiga_rdb;        /* machdep/pegasos2/of/amiga_rdb.c */
 extern Filesys g_iso9660_fs;       /* upstream/fs/iso9660.c */
 extern Filesys g_dos_fat;          /* upstream/fs/dosfat.c */
 extern Filesys g_linux_ext2fs;     /* upstream/fs/ext2fs.c */
 
 Filesys *g_filesys[] = {
-	&g_dos_partition,
+	/* Partition parsers first so they can carve the disk before
+	 * whole-disk FS readers probe the surface. */
+	&g_dos_partition,                /* MBR / DOS partition table */
+	&g_amiga_rdb,                    /* Amiga Rigid Disk Block */
+	/* Whole-disk / post-partition FS readers. */
 	&g_iso9660_fs,
 	&g_dos_fat,
 	&g_linux_ext2fs,
