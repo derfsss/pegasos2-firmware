@@ -33,7 +33,8 @@ PART_BLOCK   = 1
 
 MAGIC_RDSK   = 0x5244534B    # 'RDSK'
 MAGIC_PART   = 0x50415254    # 'PART'
-DOSTYPE_FFS2 = 0x44_4F_53_07 # 'DOS\7'
+DOSTYPE_FFS2 = 0x44_4F_53_07 # 'DOS\7' -- FFS + Intl + LongName ("FFS2")
+DOSTYPE_FFSDC = 0x44_4F_53_05 # 'DOS\5' -- FFS + DirCache
 
 # --- Amiga FFS on-disk constants (mirrors machdep/pegasos2/of/amiga_ffs.c) ---
 T_HEADER     = 2
@@ -107,9 +108,9 @@ def build_rigid_disk_block(total_blocks):
     return bytes(blk)
 
 
-def build_partition_block(total_blocks):
-    """Return 512 bytes of PartitionBlock for DH0 / DOS\\7, covering
-    cylinders 2..N-1 where N = total cylinders."""
+def build_partition_block(total_blocks, dostype=DOSTYPE_FFS2):
+    """Return 512 bytes of PartitionBlock for DH0 with the given
+    DosType, covering cylinders 2..N-1 where N = total cylinders."""
     summed_longs = 64
     blk = bytearray(BLOCK_SIZE)
     off = 0
@@ -151,7 +152,7 @@ def build_partition_block(total_blocks):
     env[13] = 0xFFFFFF                            # de_MaxTransfer
     env[14] = 0x7FFFFFFF                          # de_Mask
     env[15] = 0                                   # de_BootPri
-    env[16] = DOSTYPE_FFS2                        # de_DosType = DOS\7
+    env[16] = dostype                             # de_DosType
     env[17] = 0                                   # de_Baud
     env[18] = 0                                   # de_Control
     env[19] = 1                                   # de_BootBlocks
@@ -202,11 +203,26 @@ def write_bstr(blk, off, text, maxlen):
     blk[off + 1 : off + 1 + n] = data[:n]
 
 
-def build_root_block(volume_name, hash_table):
-    """Return 512 bytes of LNFS root block with the given hash table
-    (dict bucket -> block number). Volume name is written both at the
-    standard BSTR position (OFF_NAME) -- which amiga_ffs.c reads with
-    is_lnfs=0 in FS_LIST -- and at the LNFS NaC position for safety."""
+def _put_name(blk, name, is_lnfs):
+    """Store `name` at OFF_NAME (DOS\\0..\\5) or OFF_LNFS_NAC
+    (DOS\\6/\\7) depending on `is_lnfs`. The two positions overlap
+    so we can only write one."""
+    nb = name.encode('ascii')
+    if is_lnfs:
+        assert len(nb) <= 74
+        blk[OFF_LNFS_NAC] = len(nb)
+        blk[OFF_LNFS_NAC + 1 : OFF_LNFS_NAC + 1 + len(nb)] = nb
+        blk[OFF_LNFS_NAC + 1 + len(nb)] = 0   # empty comment BSTR
+    else:
+        assert len(nb) <= 30
+        blk[OFF_NAME] = len(nb)
+        blk[OFF_NAME + 1 : OFF_NAME + 1 + len(nb)] = nb
+
+
+def build_root_block(volume_name, hash_table, is_lnfs=False):
+    """Return 512 bytes of root block with the given hash table
+    (dict bucket -> block number). Volume-name BSTR position
+    depends on DOS version (is_lnfs)."""
     blk = bytearray(BLOCK_SIZE)
     struct.pack_into(">I", blk, 0x00, T_HEADER)        # primary type
     struct.pack_into(">I", blk, 0x0C, HT_ENTRIES)      # ht_size
@@ -215,22 +231,18 @@ def build_root_block(volume_name, hash_table):
         assert 0 <= bucket < HT_ENTRIES
         struct.pack_into(">I", blk, HT_OFFSET + bucket * 4, blknum)
 
-    # Volume name at OFF_NAME (what the FS_LIST path reads).
+    # amiga_ffs.c's FS_LIST always reads the volume name with
+    # is_lnfs=0 regardless of dostype, so put it at OFF_NAME
+    # unconditionally -- even on DOS\6/\7 root blocks.
     write_bstr(blk, OFF_NAME, volume_name, 32)
-    # Also at OFF_LNFS_NAC with a trailing empty comment BSTR, so an
-    # LNFS-aware reader finds the same name.
-    write_bstr(blk, OFF_LNFS_NAC, volume_name, 76)
-    blk[OFF_LNFS_NAC + 1 + len(volume_name.encode('ascii'))] = 0
 
     struct.pack_into(">i", blk, OFF_SEC_TYPE, ST_ROOT)
-
-    # Checksum after all other fields are set.
     struct.pack_into(">I", blk, 0x14, sum_to_zero(bytes(blk)))
     return bytes(blk)
 
 
 def build_file_header(own_key, parent, name, byte_size, data_blocks,
-                       next_hash=0, extension=0):
+                       next_hash=0, extension=0, is_lnfs=False):
     blk = bytearray(BLOCK_SIZE)
     struct.pack_into(">I", blk, 0x00, T_HEADER)
     struct.pack_into(">I", blk, 0x04, own_key)
@@ -243,14 +255,7 @@ def build_file_header(own_key, parent, name, byte_size, data_blocks,
         struct.pack_into(">I", blk, DB_HIGH_OFF - i * 4, db)
 
     struct.pack_into(">I", blk, OFF_BYTE_SIZE, byte_size)
-
-    # LNFS name at NaC (the branch amiga_ffs.c takes on DOS\7 file
-    # headers). Leave a zero-length comment BSTR after the name.
-    nb = name.encode('ascii')
-    assert len(nb) <= 74   # 1 len + name + 1 comment-len must fit in 76 bytes
-    blk[OFF_LNFS_NAC] = len(nb)
-    blk[OFF_LNFS_NAC + 1 : OFF_LNFS_NAC + 1 + len(nb)] = nb
-    blk[OFF_LNFS_NAC + 1 + len(nb)] = 0   # empty comment
+    _put_name(blk, name, is_lnfs)
 
     struct.pack_into(">I", blk, OFF_EXTENSION, extension)
     struct.pack_into(">I", blk, OFF_PARENT, parent)
@@ -279,15 +284,21 @@ def build_extension_block(own_key, parent, data_blocks, next_extension=0):
     return bytes(blk)
 
 
-def build_filesystem(payload, partition_blocks):
-    """Return dict {block_idx: 512 bytes} describing a minimal FFS2
-    filesystem containing one file 'test.elf'=payload."""
+def build_filesystem(payload, partition_blocks, dostype=DOSTYPE_FFS2):
+    """Return dict {block_idx: 512 bytes} describing a minimal Amiga
+    filesystem (DOS\\0..\\7) containing one file 'test.elf'=payload.
+    We only generate FFS-flavour data blocks (dostype with bit 0 set)
+    because the OFS data-block header isn't useful to test here."""
+    assert dostype & 0x01, "mkrdb.py currently only emits FFS-flavour data"
+    dt_low = dostype & 0xFF
+    is_lnfs = (dt_low == 6 or dt_low == 7)
+
     blocks = {}
     file_name = "test.elf"
     bucket = name_hash(file_name.encode('ascii'))
 
     # Boot block at partition offset 0 (DosType only).
-    blocks[0] = build_boot_block(DOSTYPE_FFS2)
+    blocks[0] = build_boot_block(dostype)
 
     # Slice payload into BLOCK_SIZE chunks, assigned to data blocks
     # starting at FIRST_DATA.
@@ -311,7 +322,7 @@ def build_filesystem(payload, partition_blocks):
     blocks[FILE_HDR] = build_file_header(
         own_key=FILE_HDR, parent=ROOT_BLOCK, name=file_name,
         byte_size=len(payload), data_blocks=chunks[0],
-        next_hash=0, extension=hdr_ext,
+        next_hash=0, extension=hdr_ext, is_lnfs=is_lnfs,
     )
 
     for k, ext_id in enumerate(ext_ids):
@@ -321,7 +332,7 @@ def build_filesystem(payload, partition_blocks):
             data_blocks=chunks[k + 1], next_extension=next_ext,
         )
 
-    # Data blocks: raw bytes (DOS\7 = FFS, no per-block header).
+    # Data blocks: raw bytes (FFS flavour, no per-block header).
     for i, block_id in enumerate(data_ids):
         start = i * BLOCK_SIZE
         chunk = payload[start:start + BLOCK_SIZE]
@@ -330,7 +341,8 @@ def build_filesystem(payload, partition_blocks):
         blocks[block_id] = chunk
 
     # Root block last so it can reference the file header.
-    blocks[ROOT_BLOCK] = build_root_block("TEST", {bucket: FILE_HDR})
+    blocks[ROOT_BLOCK] = build_root_block("TEST", {bucket: FILE_HDR},
+                                           is_lnfs=is_lnfs)
 
     return blocks
 
@@ -338,21 +350,28 @@ def build_filesystem(payload, partition_blocks):
 def main():
     args = sys.argv[1:]
     if not args:
-        print("usage: mkrdb.py OUT.img [BLOCKS] [--elf path/to/test_kernel.elf]",
+        print("usage: mkrdb.py OUT.img [BLOCKS] [--elf path/to/test_kernel.elf] "
+              "[--dostype N]   (N = 0..7 for DOS\\N, default 7 = FFS2)",
               file=sys.stderr)
         sys.exit(1)
 
     out = args.pop(0)
     elf_path = None
-    # Filter --elf out of positional args
+    dt_low = 7   # default DOS\7 (FFS2)
     remaining = []
     it = iter(args)
     for a in it:
         if a == "--elf":
             elf_path = next(it)
+        elif a == "--dostype":
+            dt_low = int(next(it))
+            assert 0 <= dt_low <= 7, "dostype must be 0..7"
         else:
             remaining.append(a)
     blocks = int(remaining[0]) if remaining else DEFAULT_BLKS
+
+    dostype = 0x44_4F_53_00 | dt_low   # 'DOS\<N>'
+    is_lnfs = (dt_low == 6 or dt_low == 7)
 
     if elf_path:
         with open(elf_path, "rb") as fh:
@@ -363,7 +382,7 @@ def main():
         payload = b"PEG2" + b"\x00" * (BLOCK_SIZE - 4)
 
     rdb  = build_rigid_disk_block(blocks)
-    part = build_partition_block(blocks)
+    part = build_partition_block(blocks, dostype=dostype)
     assert len(rdb)  == BLOCK_SIZE
     assert len(part) == BLOCK_SIZE
 
@@ -373,7 +392,7 @@ def main():
     part_offset       = 2 * bytes_per_cyl
     partition_blocks  = (total_cyls - 2) * SURFACES * BLKS_PER_TRK
 
-    fs_blocks = build_filesystem(payload, partition_blocks)
+    fs_blocks = build_filesystem(payload, partition_blocks, dostype=dostype)
 
     with open(out, "wb") as f:
         # Zero-fill to total size first, then patch in the non-zero blocks.
@@ -386,12 +405,13 @@ def main():
             f.write(data)
 
     print(f"wrote {out}: {blocks} blocks = {blocks * BLOCK_SIZE // 1024} KiB")
-    print(f"  RDSK @ block 0, PART @ block 1 (DH0, DOS\\7 FFS2)")
+    print(f"  RDSK @ block 0, PART @ block 1 "
+          f"(DH0, DOS\\{dt_low} {'LNFS' if is_lnfs else ''})")
     print(f"  partition: cyls 2..{total_cyls-1}, {partition_blocks} blocks "
           f"at disk offset 0x{part_offset:X}")
     if elf_path:
         num_data = (len(payload) + BLOCK_SIZE - 1) // BLOCK_SIZE
-        print(f"  FFS2 /test.elf: {len(payload)} bytes in {num_data} data blocks")
+        print(f"  /test.elf: {len(payload)} bytes in {num_data} data blocks")
 
 
 if __name__ == "__main__":

@@ -262,9 +262,17 @@ open_volume(Environ *e, Instance *disk, uLong part_loc, uInt part_size,
 	g_ffs.dostype    = dostype & 0xFF;
 	g_ffs.is_ffs     = (g_ffs.dostype & DOSTYPE_FFS_BIT)  ? 1 : 0;
 	g_ffs.is_intl    = (g_ffs.dostype & DOSTYPE_INTL_BIT) ? 1 : 0;
-	/* DC implies Intl. LNFS is detected by the root-block's
-	 * filesystem-type signature (Barthel's field) OR by the low
-	 * byte of the partition's DosType being 6 or 7. */
+	/* DirCache (DOS\4/\5) implies Intl folding even though the
+	 * Intl bit itself isn't set on DOS\4's dostype. Barthel's doc
+	 * and Commodore's original DC code both make this guarantee --
+	 * without it the hash bucket in a DC volume would be computed
+	 * with ASCII-only folding on writer and Intl folding on reader
+	 * (or vice versa) and name lookups would miss. */
+	if (g_ffs.dostype & DOSTYPE_DC_BIT)
+		g_ffs.is_intl = 1;
+	/* LNFS is detected by the low byte of the partition's DosType
+	 * being 6 or 7 (Barthel's root-block signature field is a
+	 * secondary hint; the dostype is authoritative for our reader). */
 	if (g_ffs.dostype == 6 || g_ffs.dostype == 7) {
 		g_ffs.is_lnfs = 1;
 		g_ffs.is_intl = 1;   /* LNFS always uses Intl hashing */
@@ -551,6 +559,7 @@ amiga_ffs(Environ *e, Filesys_action what, Instance *disk,
 		g_ffs.dostype    = dt;
 		g_ffs.is_ffs     = (dt & DOSTYPE_FFS_BIT)  ? 1 : 0;
 		g_ffs.is_intl    = (dt & DOSTYPE_INTL_BIT) ? 1 : 0;
+		if (dt & DOSTYPE_DC_BIT) g_ffs.is_intl = 1;
 		g_ffs.is_lnfs    = (dt == 6 || dt == 7)    ? 1 : 0;
 		if (g_ffs.is_lnfs) g_ffs.is_intl = 1;
 		g_ffs.root_block = picked_root;
