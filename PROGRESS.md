@@ -3,7 +3,7 @@
 This file is the handoff document for the next impl-agent session.
 Read it after `CLAUDE.md` and `docs/START-HERE.md`.
 
-## One-line status (2026-04-23)
+## One-line status (2026-04-24)
 
 OF Forth runtime bring-up is in progress as a multi-commit
 series. Commits 1..8 of N are done (OF series exit criteria all
@@ -75,8 +75,17 @@ ExtInt → CI Tier-B → SMBus):
    0x00200000) to free that window for a 2 MiB SF pool at
    0x00200000..0x003FFFFF -- now spec-07 compliant; heap-info
    prints "OK".
-   Real block-device + FS reading still deferred (G5 BAT setup,
-   G6 non-ELF formats, G7 device-path resolution).
+   Boot 5/N (`4cb021f`): spec-07 §register-state translation-on
+   compliance -- machine_jump_os now programs IBAT0/DBAT0 for DRAM
+   (0x00000000..0x0FFFFFFF, cacheable R/W) and IBAT1/DBAT1 for
+   MV64361+PCI-IO+flash (0xF0000000..0xFFFFFFFF, I+G R/W), then
+   sets MSR[IR|DR] alongside clearing MSR[EE]. Test kernel extended
+   to read + print MSR and DBAT0U/DBAT1U at entry. Observed on
+   test-boot: `MSR=00000032 DBAT0U=00001FFF DBAT1U=F0001FFF` --
+   IR=1, DR=1, RI=1, EE=0, exactly the spec §register-state
+   contract.
+   Real block-device + FS reading still deferred (G6 non-ELF
+   formats, G7 device-path resolution).
 
 Default file-backed boot is 2,208 bytes with 0 forbidden strings
 across default + bridge + EXCEPTION_TEST. Maintainer-accepted
@@ -147,6 +156,7 @@ enabled in the default build.
 ## Commit history (as of this writing)
 
 ```
+4cb021f  Boot 5/N: BATs + MSR[IR|DR] at OS handoff (spec 07 translation-on)
 b2699a6  Boot 4/N+2: relocate x86emu to 0x01000000; spec-07 heap compliance
 26fe157  Boot 4/N+1: heap-info Forth word + flag spec-07 heap-placement gap
 d9000dd  Boot 4/N: spec-07 register-state compliance (ET_DYN + r1 + bootargs)
