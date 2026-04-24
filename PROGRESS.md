@@ -338,6 +338,25 @@ the firmware side of the spec-07 boot handoff is proven.
        configured per docs/04 board convention; SuperIO
        config-window re-locked after UART1 enable. Documents
        the VT8231 sub-devices we intentionally skip.
+
+   Real-world AOS4 disk smoke test (`3e52c1d`): booted from a
+   live AmigaOS 4.1 Update 3 install disk (qcow2, SFS\0 on RDB,
+   LowCyl=32). Surfaced two amiga_sfs.c bugs that the synthetic
+   mkrdb.py test didn't: (a) real SFS formatters put the root
+   block at partition block 0 not 1; (b) checksums are emitted
+   with sum == 0xFFFFFFFF rather than sum == 0 despite the
+   AROS header comment suggesting the latter. Also normalised
+   sfs_walk_path() so subdirectory listing works. After the
+   fixes:
+     ok list-files hd:0 /           -> [AmigaOS]
+     ok list-files hd:0 /AmigaOS    -> full 4.1 install listing
+     ok boot hd:0 /AmigaOS/amigaboot.of
+         elf32:   PT_LOAD #0 -> 0x200000 (61536/61536)
+         machine_go: e_entry=0x200000 r1=0x210060; transferring...
+         (amigaboot.of runs then faults inside its first CI
+          call with a service-name pointer outside DRAM --
+          separate issue; the firmware's FS + ELF loader +
+          spec-07 handoff path is proven on a real image.)
    cache, M4 ISO9660 FS + fs/fs dispatcher, M5 /aliases + test-
    media generation, M6 machine_go → machine_jump_os integration
    + `boot cd /test.elf` end-to-end, M7 NVRAM defaults +
@@ -423,6 +442,7 @@ c6a1fc5  Block 6/N: boot cd /test.elf end-to-end -- full spec-07 flow works
 73ca06c  Block 4/N: ISO9660 filesystem + test-iso-ls lists AOS4 CD root
 287c96a  Block 3/N: block reads via deblocker -- CD001 at LBA 16 verified
 a79e0f7  Block 2/N: VT8231 PCI IDE driver attaches + IDENTIFY works
+3e52c1d  amiga_sfs: two bugs found by real-world AOS4 SFS\0 disk
 4a18d89  VT8231/audit: PIRQ router + SuperIO re-lock (spec 04 completeness)
 1227018  W83194/1: VT8231 SMBus host + W83194 FSB probe wired into timer_calibrate
 6fc21ac  M48T59/2 + CI/7: get-time-of-day / set-time-of-day via M48T59 RTC
