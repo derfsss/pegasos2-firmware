@@ -50,6 +50,8 @@
 
 extern Int client_interface(Cell array[]);
 
+extern Environ *g_e;
+
 /*
  * Public CI entry point. Thin wrapper -- no state tracking yet.
  * Returns 0 on dispatch success, -1 when the service name is
@@ -62,5 +64,40 @@ ci_handler(void *args)
 	if (args == NULL)
 		return -1;
 
+#ifdef CI_TRACE
+	Cell *a = (Cell *)args;
+	uInt svc_ptr = (uInt)a[0];
+	uInt nargs   = (uInt)a[1];
+	uInt nrets   = (uInt)a[2];
+
+	cprintf(g_e, "[ci] svc=0x%X nargs=%d nrets=%d",
+	        (unsigned)svc_ptr, (int)nargs, (int)nrets);
+
+	int in_dram  = (svc_ptr >= 0x00000000u && svc_ptr < 0x10000000u);
+	int in_flash = (svc_ptr >= 0xF0000000u);
+	if ((in_dram || in_flash) && svc_ptr != 0) {
+		const uByte *p = (const uByte *)(uPtr)svc_ptr;
+		cprintf(g_e, " name=\"");
+		for (int i = 0; i < 40 && p[i] >= 0x20 && p[i] < 0x7Fu; i++)
+			cprintf(g_e, "%c", p[i]);
+		cprintf(g_e, "\"");
+	} else {
+		cprintf(g_e, " name=<unmapped>");
+	}
+
+	for (uInt i = 0; i < nargs && i < 8; i++)
+		cprintf(g_e, " a%d=0x%X", (int)i, (unsigned)a[3 + i]);
+	cprintf(g_e, "\n");
+
+	int rc = (int)client_interface((Cell *)args);
+
+	cprintf(g_e, "[ci]   -> rc=%d", rc);
+	for (uInt i = 0; i < nrets && i < 8; i++)
+		cprintf(g_e, " r%d=0x%X", (int)i,
+		        (unsigned)a[3 + nargs + i]);
+	cprintf(g_e, "\n");
+	return rc;
+#else
 	return (int)client_interface((Cell *)args);
+#endif
 }

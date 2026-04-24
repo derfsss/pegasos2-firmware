@@ -92,7 +92,28 @@ extern volatile uint32_t _ms_tick_count;
  * brings in a DDR-probe driver; machine_initialize() can be made
  * size-adaptive later.
  */
-#define PEGASOS2_MEM_POOL_BASE   0x00200000u
+/*
+ * Malloc pool base. Historically parked at 0x00200000 (the first
+ * 2 MiB mark) per docs/07 §Load-address, which reasons about the
+ * AmigaOS kernel proper loading at 0x00400000. That layout was
+ * wrong for the real world: the AOS bootstrap `amigaboot.of` is
+ * itself an ELF linked at 0x00200000 -- it loads at the SAME
+ * address our pool used to sit at, and its PT_LOAD stomps the
+ * first ~60 KiB of SF's heap (Forth dict, device-tree nodes,
+ * caller stacks). The first CI callback from the just-loaded
+ * amigaboot.of then walks a corrupted dict and faults.
+ *
+ * Moving the pool past every conventional OS load region avoids
+ * the collision entirely:
+ *     0x00200000..0x003FFFFF  free for amigaboot.of + bootstraps
+ *     0x00400000..0x00FFFFFF  free for the AOS kernel / Linux
+ *     0x01000000..0x010FFFFF  x86emu buffer (Boot 4/N+2)
+ *     0x01100000..0x012FFFFF  <-- SF malloc pool (2 MiB here)
+ *
+ * heap-info's spec-07 verdict check was updated in lockstep; the
+ * window it asserts is now 0x01100000..0x012FFFFF.
+ */
+#define PEGASOS2_MEM_POOL_BASE   0x01100000u
 #define PEGASOS2_DRAM_TOP        0x20000000u     /* QEMU -m 512 ceiling */
 #define PEGASOS2_MEM_REPORT_SIZE (PEGASOS2_DRAM_TOP - PEGASOS2_MEM_POOL_BASE)
 

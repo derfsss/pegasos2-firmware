@@ -435,11 +435,15 @@ CC(f_set_bootargs)
 }
 
 /*
- * `heap-info ( -- )` prints the SF malloc-pool bounds so a human can
- * verify the spec 07 §Load-address contract at runtime: heap must
- * stay above 0x200000 AND below 0x400000 so a default AOS-style
- * kernel load at 0x400000 has a clear region. Values come from the
- * machdep globals populated in machine_initialize().
+ * `heap-info ( -- )` prints the SF malloc-pool bounds so a human
+ * can verify the pool is outside every region a boot-kernel or
+ * AOS bootstrap might try to load into. docs/07 §Load-address
+ * originally said "heap between 0x200000 and 0x400000", but real-
+ * world amigaboot.of is linked at 0x200000 and its PT_LOAD stomped
+ * the pool there. The pool moved to 0x01100000 (just past the
+ * x86emu buffer at 0x01000000) so the classic AOS load area
+ * 0x00200000..0x00FFFFFF is fully free for bootstraps + kernel
+ * modules.
  */
 extern Byte *g_machine_memory;
 extern uInt  g_machine_memory_used;
@@ -453,10 +457,14 @@ CC(f_heap_info)
 	cprintf(e, "heap-info: pool 0x%X..0x%X (%d KiB)\n",
 	        (unsigned)base, (unsigned)(end - 1), (int)(size / 1024));
 
+	/* Accept pool anywhere that clears the AOS bootstrap + kernel
+	 * load area (0x200000..0x00FFFFFF) AND the x86emu buffer
+	 * (0x01000000..0x010FFFFF). The new-firmware layout puts the
+	 * pool at 0x01100000..0x012FFFFF. */
 	const char *status =
-	    (base >= 0x00200000u && end <= 0x00400000u)
-	      ? "OK (within spec 07 0x200000..0x400000 window)"
-	      : "OUT-OF-SPEC (clashes with spec 07 default-load 0x400000)";
+	    (base >= 0x01100000u && end <= 0x02000000u)
+	      ? "OK (pool clear of AOS bootstrap + x86emu regions)"
+	      : "OUT-OF-SPEC (pool overlaps AOS bootstrap or x86emu)";
 	cprintf(e, "heap-info: %s\n", status);
 	return NO_ERROR;
 }
