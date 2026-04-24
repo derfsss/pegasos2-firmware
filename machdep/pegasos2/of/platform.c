@@ -608,6 +608,7 @@ EC(install_deblocker);
 EC(install_disklabel);
 EC(install_ide_driver);
 EC(install_aliases);
+EC(install_client_services);
 
 /*
  * Install order notes:
@@ -625,6 +626,14 @@ EC(install_aliases);
  *  - install_aliases must run AFTER install_ide_driver because
  *    it derives /aliases/cd and /aliases/hd by walking the IDE
  *    children's paths (find_first_cd / find_first_hd).
+ *  - install_client_services creates /openprom/client-services and
+ *    registers the IEEE-1275 CI method table under it so
+ *    client_interface() dispatches via execute_static_method_name
+ *    instead of the linear fallback scan. Spec 06 §"Required
+ *    services" lists the services; all live in upstream client.c.
+ *    Order-independent relative to the device-tree installers,
+ *    but we run it last so any future CI service that consults
+ *    the populated device tree can do so.
  */
 const Command install_list[] = {
 	install_root,
@@ -639,5 +648,6 @@ const Command install_list[] = {
 	install_disklabel,
 	install_ide_driver,
 	install_aliases,
+	install_client_services,
 	NULL
 };

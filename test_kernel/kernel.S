@@ -66,6 +66,13 @@ __start:
 	li      r12, 0x0A
 	bl      uart_putc
 
+	/* Spec 06 CI callback smoke test -- call the firmware's CI
+	 * handler via the r5 pointer we were given at boot, asking for
+	 * the "milliseconds" service. Proves that the CI entry is
+	 * reachable from OS context (not just from firmware Forth) and
+	 * returns a sane value. */
+	bl      call_ci_milliseconds
+
 	/* Halt via an unconditional trap. This hits the firmware's
 	 * 0x700 Program-exception handler (panic_dump), which prints
 	 * a register dump and spins -- a clean terminal state for
@@ -74,6 +81,101 @@ __start:
 
 	/* Unreachable. */
 1:	b       1b
+
+/* ------- CI callback helper -------
+ *
+ * call_ci_milliseconds: invokes the firmware's ci_handler (address
+ * in r5 on function entry) with a {"milliseconds", 0 args, 1 return}
+ * call struct built on the stack. Prints " CI.ms=XXXXXXXX" on
+ * success or " CI.ms=ERR" on failure.
+ *
+ * The IEEE-1275 call struct layout (spec 06 §"Entry convention"):
+ *     u32 service        (pointer to ASCII service name)
+ *     u32 nargs          (count of arg slots)
+ *     u32 nreturns       (count of return slots)
+ *     u32 argret[]       (nargs args followed by nreturns rets)
+ *
+ * ci_handler ABI:
+ *     r3 = struct pointer on entry
+ *     r3 = 0 on dispatch success (ret slots filled), nonzero on
+ *          unknown service
+ */
+call_ci_milliseconds:
+	mflr    r14
+
+	/* Obtain a pointer to "milliseconds\0" via the usual PPC
+	 * trampoline trick: BL to after the string, MFLR picks up the
+	 * return address which is the byte just past the string. */
+	bl      past_ci_str
+.byte 'm','i','l','l','i','s','e','c','o','n','d','s', 0
+	.align  2
+past_ci_str:
+	mflr    r18
+	mtlr    r14                     /* restore caller LR before we
+	                                   stomp it again below */
+	mflr    r14                     /* re-save for the bctrl call */
+
+	/* Allocate 32 bytes of CI scratch on the OS-provided stack.
+	 * Layout (r1-relative after addi):
+	 *   [r1+ 8]  service  = r18     (ptr to "milliseconds")
+	 *   [r1+12]  nargs    = 0
+	 *   [r1+16]  nreturns = 1
+	 *   [r1+20]  rets[0]  = placeholder (CI fills with ms count)
+	 */
+	stwu    r1, -32(r1)
+	stw     r18, 8(r1)
+	li      r19, 0
+	stw     r19, 12(r1)
+	li      r19, 1
+	stw     r19, 16(r1)
+	li      r19, 0
+	stw     r19, 20(r1)
+
+	addi    r3, r1, 8              /* r3 = call-struct ptr */
+	mtctr   r5                     /* ctr = ci_handler address */
+	bctrl                          /* call ci_handler(struct_ptr) */
+
+	mr      r20, r3                /* CI return code (0 = ok) */
+	lwz     r21, 20(r1)            /* milliseconds value */
+	addi    r1, r1, 32             /* restore stack */
+
+	/* Print " CI.ms=" then hex. On non-zero CI ret, print "ERR"
+	 * instead of the value. */
+	li      r12, ' '; bl uart_putc
+	li      r12, 'C'; bl uart_putc
+	li      r12, 'I'; bl uart_putc
+	li      r12, '.'; bl uart_putc
+	li      r12, 'm'; bl uart_putc
+	li      r12, 's'; bl uart_putc
+	li      r12, '='; bl uart_putc
+
+	cmpwi   r20, 0
+	beq     ci_ms_hex
+	li      r12, 'E'; bl uart_putc
+	li      r12, 'R'; bl uart_putc
+	li      r12, 'R'; bl uart_putc
+	b       ci_ms_done
+
+ci_ms_hex:
+	/* 8 hex nibbles from r21, MSB first. */
+	li      r16, 8
+	mr      r17, r21
+1:
+	rlwinm  r12, r17, 4, 28, 31
+	cmpwi   r12, 10
+	blt     2f
+	addi    r12, r12, ('A' - '0' - 10)
+2:
+	addi    r12, r12, '0'
+	bl      uart_putc
+	slwi    r17, r17, 4
+	addic.  r16, r16, -1
+	bne     1b
+
+ci_ms_done:
+	li      r12, 0x0A; bl uart_putc
+	mtlr    r14
+	blr
 
 /* ------- Helpers ------- */
 
