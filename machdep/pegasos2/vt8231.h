@@ -29,6 +29,35 @@
  * unlock the SuperIO config window, flip the UART1 enable bit. */
 void vt8231_enable_uart1(void);
 
+/*
+ * Complete the southbridge config after the UART has come up:
+ *   - Programme the PIRQ-A..D interrupt router (config offsets
+ *     0x54/0x55/0x57) with the Pegasos II conventional mapping of
+ *     PIRQ A/B/C/D -> IRQ 11/10/9/5. docs/04 §"Interrupt router"
+ *     documents the mapping. An OS that rewalks the device tree
+ *     and consults these registers (Linux does via pci_quirks)
+ *     will see stable values instead of the chip's power-on 0x00.
+ *   - Re-lock the SuperIO config window (config reg 0x50 bit 2 = 0)
+ *     so spurious writes to 0x3F0/0x3F1 post-init don't retrigger
+ *     SuperIO reconfiguration.
+ *
+ * Functions intentionally NOT initialised here, with reasoning:
+ *   - fn 1 IDE           handled by machdep/of/ide_driver.c (Phase 4)
+ *   - fn 2/3 USB UHCI    not needed for boot; OS drives its own init
+ *   - fn 4 PMU/SMBus     probed on demand by vt8231_w83194_fsb_hz()
+ *   - fn 5 AC'97 audio   out of scope; spec 04 says firmware MUST
+ *                        NOT init the codec
+ *   - fn 6 MC'97 modem   out of scope
+ *   - SuperIO parallel   spec 04 §"parallel-port remap conflict"
+ *                        says leave disabled (QEMU VGA collision)
+ *   - SuperIO UART2      not needed; UART1 is our console. An
+ *                        `enable-uart2?` NVRAM toggle would be a
+ *                        future nice-to-have.
+ *   - SuperIO PS/2       QEMU wires 0x60/0x64 to its own i8042 model
+ *                        regardless of SuperIO enable bits.
+ */
+void vt8231_complete_init(void);
+
 /* --------------------------------------------------------------- *
  *  i8259 PIC (master+slave) -- standard ISA ports                  *
  * --------------------------------------------------------------- */

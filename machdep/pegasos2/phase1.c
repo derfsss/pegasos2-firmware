@@ -56,6 +56,13 @@ void phase1_c_main(void)
 	vt8231_enable_uart1();
 	uart_init(UART1_BASE);
 
+	/* VT8231 init completeness (docs/04): set PIRQ-A..D routing
+	 * per board convention + re-lock the SuperIO config window.
+	 * Runs here rather than deferred to later in phase1 so PIRQ
+	 * registers carry spec-compliant values before the OS sees
+	 * them in the device tree. */
+	vt8231_complete_init();
+
 	uart_puts(UART1_BASE,
 		  "\r\n\r\nPegasos II BIOS (clean-room rewrite) - Phase 1\n");
 

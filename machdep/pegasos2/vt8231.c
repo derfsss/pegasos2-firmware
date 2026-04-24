@@ -45,6 +45,41 @@ void vt8231_enable_uart1(void)
 	mmio_write8(SUPERIO_DAT_ADDR, 0x07);
 }
 
+/* Pegasos II PIRQ-to-ISA-IRQ routing (docs/04 §"Interrupt router").
+ * Each nibble of the config reg selects an ISA IRQ 0..15; a zero
+ * nibble means "not routed". We set:
+ *     0x54 low nibble  = PIRQ A -> IRQ 11
+ *     0x54 high nibble = PIRQ B -> IRQ 10
+ *     0x55 low nibble  = PIRQ C -> IRQ 9
+ *     0x55 high nibble = PIRQ D -> IRQ 5
+ * 0x56/0x57 hold PIRQ-E..H mirrors that aren't routed on Pegasos2. */
+#define VT8231_PIRQ_A_IRQ   11u
+#define VT8231_PIRQ_B_IRQ   10u
+#define VT8231_PIRQ_C_IRQ    9u
+#define VT8231_PIRQ_D_IRQ    5u
+
+void vt8231_complete_init(void)
+{
+	/* Build the 0x54..0x57 longword from the per-PIRQ nibbles.
+	 * pci_cfg_write32 writes four bytes starting at the aligned
+	 * address; we keep the upper two bytes zero (no E/F/G/H
+	 * routing on Pegasos2). */
+	uint32_t pirq =
+	    ((uint32_t)VT8231_PIRQ_A_IRQ      ) |
+	    ((uint32_t)VT8231_PIRQ_B_IRQ << 4 ) |
+	    ((uint32_t)VT8231_PIRQ_C_IRQ << 8 ) |
+	    ((uint32_t)VT8231_PIRQ_D_IRQ << 12);
+	pci_cfg_write32(VT8231_HOST, VT8231_BUS, VT8231_DEV, VT8231_FN_ISA,
+	                0x54, pirq);
+
+	/* Re-lock the SuperIO config window. bit 2 of config reg 0x50
+	 * was set by vt8231_enable_uart1(); clearing it seals the
+	 * window so subsequent ISA-port writes to 0x3F0/0x3F1 can't
+	 * retrigger a SuperIO reconfiguration. */
+	pci_cfg_write32(VT8231_HOST, VT8231_BUS, VT8231_DEV, VT8231_FN_ISA,
+	                0x50, 0x00000000u);
+}
+
 /* --------------------------------------------------------------- *
  *  i8259 PIC init + EOI helpers                                     *
  * --------------------------------------------------------------- */
