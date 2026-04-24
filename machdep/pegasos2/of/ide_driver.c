@@ -497,6 +497,22 @@ static Package *find_first_cd(Environ *e)
 	return NULL;
 }
 
+/*
+ * Locate the first non-ATAPI (i.e. ATA hard disk) child under the
+ * IDE controller. Returns NULL if no HD attached.
+ */
+static Package *find_first_hd(Environ *e)
+{
+	Package *ide = find_ide_controller(e);
+	if (ide == NULL) return NULL;
+	Package *c;
+	for (c = ide->children; c != NULL; c = c->link) {
+		if (find_table(c->props, (Byte *)"atapi", CSTR) == NULL)
+			return c;
+	}
+	return NULL;
+}
+
 CC(f_test_read_block)
 {
 	Instance *inst = NULL;
@@ -648,5 +664,83 @@ CC(f_test_iso_ls)
 
 	PUSHP(e, inst);
 	(void)execute_word(e, "close-dev");
+	return NO_ERROR;
+}
+
+/*
+ * install_aliases (--)
+ *
+ * Populates the canonical Pegasos2 device aliases (/aliases/cd
+ * and /aliases/hd) with the paths of whichever CD / HD the IDE
+ * driver actually found. AOS4's `boot cd amigaboot.of` and
+ * Linux's `boot hd vmlinux` reference these aliases via SF's
+ * resolve_path alias-expansion (device.c:1359-1387: when the
+ * leading path component doesn't start with '/', look it up in
+ * /aliases->props before treating it as a literal path).
+ *
+ * /aliases is created by SF's install_packages BEFORE install_list
+ * runs (table.c:1344), so we just call prop_set_str on
+ * e->aliases->props -- no install_aliases() Forth word, no
+ * install-list scaffolding.
+ *
+ * Run AFTER install_ide_driver so the cd@/disk@ children exist
+ * to derive paths from. If no drive is present we silently skip
+ * that alias rather than installing a broken one (resolve_path
+ * would fail at the missing leaf with "no such device").
+ */
+CC(install_aliases)
+{
+	Byte pathbuf[STR_SIZE];
+
+	Package *cd = find_first_cd(e);
+	if (cd != NULL && get_device_name(e, cd, pathbuf)) {
+		prop_set_str(e->aliases->props, (Byte *)"cd", CSTR,
+			     pathbuf, CSTR);
+		/* `cdrom` is a widely-used alternate spelling some
+		 * bootloaders look for; alias to the same path. */
+		prop_set_str(e->aliases->props, (Byte *)"cdrom", CSTR,
+			     pathbuf, CSTR);
+	}
+
+	Package *hd = find_first_hd(e);
+	if (hd != NULL && get_device_name(e, hd, pathbuf)) {
+		prop_set_str(e->aliases->props, (Byte *)"hd", CSTR,
+			     pathbuf, CSTR);
+		/* `disk` -- generic alias used by some OS loaders. */
+		prop_set_str(e->aliases->props, (Byte *)"disk", CSTR,
+			     pathbuf, CSTR);
+	}
+
+	return NO_ERROR;
+}
+
+/*
+ * test-aliases (--)
+ *
+ * Print every property on /aliases (skipping the implicit `name`).
+ * Smoke test for install_aliases: we expect to see "cd" and
+ * "cdrom" on a -cdrom QEMU run, plus "hd"/"disk" if a HD is also
+ * attached.
+ */
+CC(f_test_aliases)
+{
+	Entry *ent;
+	int n = 0;
+
+	cprintf(e, "test-aliases:\n");
+	for (ent = e->aliases->props->list; ent != NULL; ent = ent->link) {
+		if (compare_strs(ent->name, PSTR, (Byte *)"name", CSTR))
+			continue;
+		Byte *str;
+		Int len;
+		if (prop_get_str(e->aliases->props, ent->name, PSTR,
+				 &str, &len) == NO_ERROR) {
+			cprintf(e, "  %-12P %S\n",
+				ent->name, str, len);
+			n++;
+		}
+	}
+	if (n == 0)
+		cprintf(e, "  (none)\n");
 	return NO_ERROR;
 }

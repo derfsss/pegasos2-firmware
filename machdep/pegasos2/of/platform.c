@@ -301,6 +301,7 @@ extern Retcode f_ls_pci(Environ *e);
 extern Retcode f_test_ide_probe(Environ *e);
 extern Retcode f_test_read_block(Environ *e);
 extern Retcode f_test_iso_ls(Environ *e);
+extern Retcode f_test_aliases(Environ *e);
 
 static const Initentry init_pegasos2[] = {
 	{ (Byte *)"test-ci", f_test_ci, INVALID_FCODE, F_NONE, T_FUNC HELP(
@@ -323,6 +324,8 @@ static const Initentry init_pegasos2[] = {
 			"(--)  open cd@0,0, read LBA 16, verify ISO9660 CD001 signature") },
 	{ (Byte *)"test-iso-ls", f_test_iso_ls, INVALID_FCODE, F_NONE, T_FUNC HELP(
 			"(--)  list the root directory of the first ATAPI ISO9660 volume") },
+	{ (Byte *)"test-aliases", f_test_aliases, INVALID_FCODE, F_NONE, T_FUNC HELP(
+			"(--)  print every entry under /aliases (cd, cdrom, hd, disk)") },
 	{ NULL, NULL, INVALID_FCODE, F_NONE, T_FUNC HELP("") }
 };
 
@@ -472,6 +475,7 @@ EC(install_pci_tree);
 EC(install_deblocker);
 EC(install_disklabel);
 EC(install_ide_driver);
+EC(install_aliases);
 
 /*
  * Install order notes:
@@ -486,6 +490,9 @@ EC(install_ide_driver);
  *    between ide_driver and deblocker/disklabel is not strictly
  *    constrained here. Placing deblocker/disklabel before
  *    ide_driver for clarity.
+ *  - install_aliases must run AFTER install_ide_driver because
+ *    it derives /aliases/cd and /aliases/hd by walking the IDE
+ *    children's paths (find_first_cd / find_first_hd).
  */
 const Command install_list[] = {
 	install_root,
@@ -499,5 +506,6 @@ const Command install_list[] = {
 	install_deblocker,
 	install_disklabel,
 	install_ide_driver,
+	install_aliases,
 	NULL
 };

@@ -307,6 +307,32 @@ $(TK_OBJ): $(TK_ELF)
 
 OBJS += $(TK_OBJ)
 
+# -----------------------------------------------------------------
+# Block 5/N: test-iso target
+# -----------------------------------------------------------------
+# A minimal ISO9660 image carrying our test kernel as /test.elf.
+# Built on demand (`make test-iso`) -- not part of the default
+# `make` target since it requires WSL+genisoimage and only matters
+# for M5/M6 manual smoke tests. Once built, run as:
+#     qemu-system-ppc -M pegasos2 -m 512 \
+#         -bios build/firmware-raw.bin \
+#         -cdrom build/test.iso \
+#         -serial mon:stdio -display none
+# Then at the ok prompt issue `boot cd /test.elf` (M6 wires the
+# load path) or `test-iso-ls` (M4 lists the root directory).
+
+TEST_ISO   := $(BUILD)/test.iso
+ISO_STAGE  := $(BUILD)/iso_stage
+
+$(TEST_ISO): $(TK_ELF)
+	@mkdir -p $(ISO_STAGE)
+	@cp $< $(ISO_STAGE)/test.elf
+	@genisoimage -quiet -o $@ -V 'PEGASOS2-TEST' -J -R -allow-lowercase $(ISO_STAGE)/
+	@echo "  ISO   $@ ($$(wc -c < $@) bytes)"
+
+.PHONY: test-iso
+test-iso: $(TEST_ISO)
+
 # Commit-2 acceptance target: partial-link the SF subset with
 # machdep.o and report remaining undefined symbols. Those are the
 # "not yet brought in" SF files; Commit 3 expands the subset to
