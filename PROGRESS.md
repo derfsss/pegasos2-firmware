@@ -3,7 +3,7 @@
 This file is the handoff document for the next impl-agent session.
 Read it after `CLAUDE.md` and `docs/START-HERE.md`.
 
-## One-line status (2026-04-24)
+## One-line status (2026-04-25)
 
 OF Forth runtime bring-up is in progress as a multi-commit
 series. Commits 1..8 of N are done (OF series exit criteria all
@@ -87,6 +87,36 @@ ExtInt → CI Tier-B → SMBus):
    Real block-device + FS reading still deferred (G6 non-ELF
    formats, G7 device-path resolution).
 
+6. **Block-device + FS infrastructure** (M1 of the 7-milestone
+   plan landed; M2-M7 pending). First step toward making
+   `boot cd amigaboot.of` work end-to-end.
+   Block 1/N (`338af27`): pegasos2 `install_pci_tree()` creates
+   /pci@80000000 (VT8231 primary bus) and /pci@c0000000 (secondary
+   expansion bus) top-level device-tree nodes matching QEMU's
+   reverse-engineered pegasos2.dts shape. Each PCI device found
+   by our existing pci_walker.c becomes a child package with the
+   standard IEEE-1275 PCI-binding properties: vendor-id, device-id,
+   revision-id, class-code, subsystem-id (swapped with
+   subsystem-vendor-id per Pegasos2 convention), interrupts, reg
+   (config-space + per-BAR), assigned-addresses (from live BAR
+   reads). Node naming follows QEMU's convention (class-derived
+   genus: ide/isa/usb/display/sound/other + slot[,func] suffix).
+   Root's #address-cells is set to 1 directly on e->root->props
+   to match CHRP pegasos2 convention without pulling in upstream
+   root.c's MMU-hook prerequisites via ROOT_ADDRESS_CELLS.
+   New `ls-pci` Forth word walks both /pci@X packages and prints
+   child nodes; observed on QEMU, all VT8231 sub-functions (fn0-
+   fn6) plus bochs-VGA present with correct classifications.
+   Downstream milestones planned: M2 IDE driver (pull ata.c +
+   atadisk.c, native-mode port with msec timeouts), M3 deblock
+   cache, M4 ISO9660 FS + fs/fs dispatcher, M5 /aliases + test-
+   media generation, M6 machine_go → machine_jump_os integration
+   + `boot cd /test.elf` end-to-end, M7 NVRAM defaults +
+   auto-boot. Pre-resolution of Q5 (SF exe-handler integration)
+   already decided: register elf32_ppc_be_is_exec/load from our
+   existing boot_kernel.c as SF's ELF handler via g_exec_list[],
+   preserves Boot 3/N hardening + Boot 4/N ET_DYN acceptance.
+
 Default file-backed boot is 2,208 bytes with 0 forbidden strings
 across default + bridge + EXCEPTION_TEST. Maintainer-accepted
 deferrals: RTC-via-M48T59 (tier-B get-time-of-day) and the
@@ -156,6 +186,7 @@ enabled in the default build.
 ## Commit history (as of this writing)
 
 ```
+338af27  Block 1/N: PCI device-tree installer + ls-pci smoke test
 4cb021f  Boot 5/N: BATs + MSR[IR|DR] at OS handoff (spec 07 translation-on)
 b2699a6  Boot 4/N+2: relocate x86emu to 0x01000000; spec-07 heap compliance
 26fe157  Boot 4/N+1: heap-info Forth word + flag spec-07 heap-placement gap
