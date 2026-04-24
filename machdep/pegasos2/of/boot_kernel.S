@@ -44,20 +44,26 @@ machine_jump_os:
 	 * (MSR[IR]=MSR[DR]=0) from reset through here, so we program BATs
 	 * and flip MSR[IR|DR] as a final act of the trampoline.
 	 *
-	 * BAT layout chosen:
+	 * BAT layout chosen (covers up to 1 GiB DRAM + MV64361/flash):
 	 *   BAT0: 0x00000000..0x0FFFFFFF (256 MiB), cacheable, R/W.
-	 *         Covers all of QEMU's -m 512 DRAM (the first 256 MiB),
-	 *         identity-mapped. The loaded kernel's image and our r1
-	 *         stack sit inside this window.
+	 *         First quarter of DRAM. Loaded kernel + amigaboot.of
+	 *         + our r1 stack live here.
 	 *   BAT1: 0xF0000000..0xFFFFFFFF (256 MiB), cache-inhibited +
-	 *         guarded, R/W. Covers the MV64361 register bank
-	 *         (0xF1000000), PCI I/O window carrying UART1 via VT8231
-	 *         (0xFE000000), and flash (0xFFF00000). Identity-mapped;
-	 *         MMIO accesses go straight through with no speculation.
+	 *         guarded, R/W. MV64361 register bank, PCI I/O window
+	 *         (UART1 via VT8231 at 0xFE000000), flash at 0xFFF00000.
+	 *         Identity-mapped; MMIO accesses bypass cache.
+	 *   BAT2: 0x10000000..0x1FFFFFFF (256 MiB), cacheable, R/W.
+	 *         Second quarter of DRAM -- needed for QEMU's -m 512+
+	 *         configurations and any AOS claim() call that asks for
+	 *         memory above the 256 MiB mark. Without this, calls into
+	 *         claim'd buffers above 256 MiB DSI-fault.
+	 *   BAT3: 0x20000000..0x2FFFFFFF (256 MiB), cacheable, R/W.
+	 *         Third quarter -- supports -m 1024 configs.
 	 *
-	 * BATs 2-3 are left invalidated. BATs 4-7 (7447A HIGH_BAT_EN) we
-	 * don't touch -- default-disabled until HID0[7] is set, which we
-	 * never set. The OS may re-map freely after entry.
+	 * BATs 4-7 (7447A HIGH_BAT_EN, HID0[7]) cover an additional 1 GiB
+	 * for -m 2048 configs; we leave them disabled because nothing on
+	 * QEMU pegasos2 currently asks for that much. A future commit can
+	 * set HID0[7] and program BAT4-7 if/when 2 GiB OS configs land.
 	 *
 	 * BAT register numbering (IBAT0U=528..IBAT3L=535, DBAT0U=536..
 	 * DBAT3L=543). Sequence: clear every U register first to invalidate
@@ -117,6 +123,34 @@ machine_jump_os:
 	ori     0, 0, 0x002A
 	mtspr   531, 0                  /* IBAT1L */
 	mtspr   539, 0                  /* DBAT1L */
+
+	/*
+	 * BAT2: 0x10000000..0x1FFFFFFF (256 MiB) DRAM, cacheable, R/W.
+	 *   BATU = BEPI(0x0800) | BL(0x7FF) | Vs=1 | Vp=1 = 0x10001FFF
+	 *   BATL = BRPN(0x0800) | WIMG(0000) | PP(10)     = 0x10000002
+	 */
+	lis     0, 0x1000
+	ori     0, 0, 0x1FFF
+	mtspr   532, 0                  /* IBAT2U */
+	mtspr   540, 0                  /* DBAT2U */
+	lis     0, 0x1000
+	ori     0, 0, 0x0002
+	mtspr   533, 0                  /* IBAT2L */
+	mtspr   541, 0                  /* DBAT2L */
+
+	/*
+	 * BAT3: 0x20000000..0x2FFFFFFF (256 MiB) DRAM, cacheable, R/W.
+	 *   BATU = BEPI(0x1000) | BL(0x7FF) | Vs=1 | Vp=1 = 0x20001FFF
+	 *   BATL = BRPN(0x1000) | WIMG(0000) | PP(10)     = 0x20000002
+	 */
+	lis     0, 0x2000
+	ori     0, 0, 0x1FFF
+	mtspr   534, 0                  /* IBAT3U */
+	mtspr   542, 0                  /* DBAT3U */
+	lis     0, 0x2000
+	ori     0, 0, 0x0002
+	mtspr   535, 0                  /* IBAT3L */
+	mtspr   543, 0                  /* DBAT3L */
 	isync
 
 	/*

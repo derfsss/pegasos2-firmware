@@ -114,8 +114,26 @@ extern volatile uint32_t _ms_tick_count;
  * window it asserts is now 0x01100000..0x012FFFFF.
  */
 #define PEGASOS2_MEM_POOL_BASE   0x01100000u
-#define PEGASOS2_DRAM_TOP        0x20000000u     /* QEMU -m 512 ceiling */
-#define PEGASOS2_MEM_REPORT_SIZE (PEGASOS2_DRAM_TOP - PEGASOS2_MEM_POOL_BASE)
+/*
+ * DRAM ceiling reported to the OS. machine_jump_os programs four
+ * cacheable DRAM BATs covering 0x00000000..0x2FFFFFFF (768 MiB),
+ * so anything below that ceiling is identity-mapped at handoff.
+ * QEMU pegasos2 supports up to 2 GiB; the next slice (0x30000000
+ * + further) needs 7447A HIGH_BAT_EN (HID0[7]) and BAT4-7
+ * programming, deferred until a real workload asks for it.
+ */
+#define PEGASOS2_DRAM_TOP        0x30000000u
+
+/*
+ * The OS-visible /memory range starts at 0x00200000 -- below that
+ * sits firmware code/data + exception vectors. SF's malloc pool
+ * lives inside the reported range (at 0x01100000) and gets
+ * pre-claimed during install_memory so /memory/available
+ * correctly excludes it.
+ */
+#define PEGASOS2_MEM_REPORT_BASE 0x00200000u
+#define PEGASOS2_MEM_REPORT_SIZE (PEGASOS2_DRAM_TOP - PEGASOS2_MEM_REPORT_BASE)
+#define PEGASOS2_MEM_POOL_OFFSET (PEGASOS2_MEM_POOL_BASE - PEGASOS2_MEM_REPORT_BASE)
 
 Byte *g_machine_memory         = NULL;
 uInt  g_machine_memory_size    = 0;
@@ -205,12 +223,35 @@ failsafe_read(Byte *buf, Int len)
 Retcode
 machine_initialize(void)
 {
-	g_machine_memory        = (Byte *)PEGASOS2_MEM_POOL_BASE;
+	/*
+	 * Decouple "what the OS sees as RAM" from "where firmware
+	 * keeps its heap". g_machine_memory is the base of the
+	 * /memory `reg` property -- it must include every byte of
+	 * DRAM the OS may want to load into (kernels, modules,
+	 * boot bitmaps). g_machine_memory_offset + _used describes
+	 * the firmware-reserved subrange of that region; SF's
+	 * install_memory pre-claims it so /memory/available shows
+	 * the rest as free for the OS.
+	 *
+	 * AOS bootstraps such as amigaboot.of issue claim() calls
+	 * for low addresses like 0x00400000 (where they place the
+	 * AOS kernel) and 0x00300000 (16 MiB scratch). With reg
+	 * starting at 0x01100000 (the old layout), those calls hit
+	 * SF's f_mmu_claim, walked g_free_list, found nothing in the
+	 * 0x00200000..0x010FFFFF range, and returned 0. amigaboot.of
+	 * then treated 0 as the allocated address and used 0+offset
+	 * as buffer pointers, smashing exception vectors on the
+	 * first read.
+	 *
+	 * Fix: report the full 0x00200000..DRAM_TOP range, with the
+	 * pool sub-range pre-marked used.
+	 */
+	g_machine_memory        = (Byte *)PEGASOS2_MEM_REPORT_BASE;
 	g_machine_memory_size   = PEGASOS2_MEM_REPORT_SIZE;
 	g_machine_memory_used   = MALLOC_POOL;
-	g_machine_memory_offset = 0;
+	g_machine_memory_offset = PEGASOS2_MEM_POOL_OFFSET;
 
-	return init_malloc(g_machine_memory, MALLOC_POOL);
+	return init_malloc((Byte *)PEGASOS2_MEM_POOL_BASE, MALLOC_POOL);
 }
 
 /*
