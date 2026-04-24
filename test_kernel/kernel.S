@@ -49,6 +49,19 @@ __start:
 	 * region"). Firmware sets it to ~4 KiB above the image top. */
 	bl      write_r1
 
+	/* Verify translation is on per spec 07 §register state
+	 * ("MSR = supervisor, translation on, interrupts disabled").
+	 * The firmware's machine_jump_os programs BAT0 (DRAM) + BAT1
+	 * (MV64361+flash) then sets MSR[IR|DR]. Expected values on
+	 * entry:
+	 *   MSR    low nibble bits: IR(0x20) | DR(0x10) set, EE(0x8000) clear
+	 *   DBAT0U = 0x00001FFF (BEPI=0, BL=0x7FF, Vs=Vp=1)
+	 *   DBAT1U = 0xF0001FFF (BEPI=0x7800, BL=0x7FF, Vs=Vp=1)
+	 */
+	bl      write_msr
+	bl      write_dbat0u
+	bl      write_dbat1u
+
 	/* Write terminator newline. */
 	li      r12, 0x0A
 	bl      uart_putc
@@ -126,6 +139,95 @@ write_r1:
 	li      r12, ' '; bl uart_putc
 	li      r12, 'r'; bl uart_putc
 	li      r12, '1'; bl uart_putc
+	li      r12, '='; bl uart_putc
+
+	li      r16, 8
+	mr      r17, r15
+1:
+	rlwinm  r12, r17, 4, 28, 31
+	cmpwi   r12, 10
+	blt     2f
+	addi    r12, r12, ('A' - '0' - 10)
+2:
+	addi    r12, r12, '0'
+	bl      uart_putc
+	slwi    r17, r17, 4
+	addic.  r16, r16, -1
+	bne     1b
+
+	mtlr    r14
+	blr
+
+/* write_msr: emit " MSR=XXXXXXXX". Proves MSR[IR|DR]=1 at entry. */
+write_msr:
+	mflr    r14
+	mfmsr   r15
+	li      r12, ' '; bl uart_putc
+	li      r12, 'M'; bl uart_putc
+	li      r12, 'S'; bl uart_putc
+	li      r12, 'R'; bl uart_putc
+	li      r12, '='; bl uart_putc
+
+	li      r16, 8
+	mr      r17, r15
+1:
+	rlwinm  r12, r17, 4, 28, 31
+	cmpwi   r12, 10
+	blt     2f
+	addi    r12, r12, ('A' - '0' - 10)
+2:
+	addi    r12, r12, '0'
+	bl      uart_putc
+	slwi    r17, r17, 4
+	addic.  r16, r16, -1
+	bne     1b
+
+	mtlr    r14
+	blr
+
+/* write_dbat0u: emit " DBAT0U=XXXXXXXX". Proves BAT0 is programmed to
+ * cover DRAM window (expected 0x00001FFF). */
+write_dbat0u:
+	mflr    r14
+	mfspr   r15, 536                /* DBAT0U */
+	li      r12, ' '; bl uart_putc
+	li      r12, 'D'; bl uart_putc
+	li      r12, 'B'; bl uart_putc
+	li      r12, 'A'; bl uart_putc
+	li      r12, 'T'; bl uart_putc
+	li      r12, '0'; bl uart_putc
+	li      r12, 'U'; bl uart_putc
+	li      r12, '='; bl uart_putc
+
+	li      r16, 8
+	mr      r17, r15
+1:
+	rlwinm  r12, r17, 4, 28, 31
+	cmpwi   r12, 10
+	blt     2f
+	addi    r12, r12, ('A' - '0' - 10)
+2:
+	addi    r12, r12, '0'
+	bl      uart_putc
+	slwi    r17, r17, 4
+	addic.  r16, r16, -1
+	bne     1b
+
+	mtlr    r14
+	blr
+
+/* write_dbat1u: emit " DBAT1U=XXXXXXXX". Proves BAT1 is programmed to
+ * cover MV64361+flash window (expected 0xF0001FFF). */
+write_dbat1u:
+	mflr    r14
+	mfspr   r15, 538                /* DBAT1U */
+	li      r12, ' '; bl uart_putc
+	li      r12, 'D'; bl uart_putc
+	li      r12, 'B'; bl uart_putc
+	li      r12, 'A'; bl uart_putc
+	li      r12, 'T'; bl uart_putc
+	li      r12, '1'; bl uart_putc
+	li      r12, 'U'; bl uart_putc
 	li      r12, '='; bl uart_putc
 
 	li      r16, 8
