@@ -183,8 +183,19 @@ static struct {
 	int        case_sens;
 	uInt       blocksize;        /* bytes (== SFS_BSIZE for now) */
 	uInt       total_blocks;
-	uInt       root_objc_block;  /* BLCK of first ObjectContainer */
-	uInt       extent_bn_root;   /* BLCK of extent B+-tree root */
+	/*
+	 * The rootblock's rootobjectcontainer field points at an OC
+	 * that holds exactly ONE fsObject: the "root directory
+	 * object". That object's name is the volume label; its
+	 * firstdirblock is where the user-visible top-level entries
+	 * actually live. So we cache both: root_objc for volume-name
+	 * extraction and root_dir_first_oc for directory walking.
+	 */
+	uInt       root_objc_block;
+	uInt       root_dir_first_oc;
+	uByte      volume_name[108];
+	uInt       volume_name_len;
+	uInt       extent_bn_root;
 } g_sfs;
 
 /* --- Big-endian readers ----------------------------------------- */
@@ -316,6 +327,47 @@ sfs_open_volume(Environ *e, Instance *disk, uLong part_loc,
 	g_sfs.total_blocks     = totalblocks;
 	g_sfs.root_objc_block  = root_objc;
 	g_sfs.extent_bn_root   = extent_bn_root;
+	g_sfs.root_dir_first_oc = 0;
+	g_sfs.volume_name_len   = 0;
+
+	/*
+	 * Read the root ObjectContainer. It holds exactly one fsObject
+	 * (the "root directory object" per objects.h). The object's
+	 * name is the volume label and its dir.firstdirblock is the
+	 * first OC of the actual top-level directory; the OCs we walk
+	 * for FS_LIST/FS_LOAD live in that chain, NOT in the
+	 * rootobjc container itself.
+	 */
+	uByte ocbuf[SFS_BSIZE];
+	Retcode r2 = read_block(e, disk, part_loc, root_objc, ocbuf);
+	if (r2 != NO_ERROR)
+		return E_NO_FILESYS;
+	if (be32(ocbuf + BH_ID) != SFS_BLOCKID_OBJC)
+		return E_NO_FILESYS;
+
+	const uByte *root_obj = ocbuf + OC_OBJECTS;
+	if (be32(root_obj + OBJ_OBJECTNODE) == 0)
+		return E_NO_FILESYS;   /* empty root OC -- not a mountable SFS */
+
+	/*
+	 * The root dir object is a directory-flavour fsObject: its
+	 * dir.firstdirblock lives at OBJ_FIRSTDIRBLOCK (same offset
+	 * as a file's size field, via the union).
+	 */
+	g_sfs.root_dir_first_oc = be32(root_obj + OBJ_FIRSTDIRBLOCK);
+
+	/* Capture the volume name (at the variable-length tail of the
+	 * fsObject). Cap at 107 chars + NUL to fit our buffer. */
+	const uByte *name = root_obj + OBJ_NAME;
+	uInt avail = (uInt)(SFS_BSIZE - OC_OBJECTS - OBJ_NAME);
+	uInt nlen = 0;
+	while (nlen < avail && nlen < sizeof g_sfs.volume_name - 1
+	       && name[nlen] != 0)
+		nlen++;
+	for (uInt i = 0; i < nlen; i++)
+		g_sfs.volume_name[i] = name[i];
+	g_sfs.volume_name[nlen] = 0;
+	g_sfs.volume_name_len = nlen;
 
 	return NO_ERROR;
 }
@@ -428,14 +480,18 @@ sfs_walk_path(Environ *e, const Byte *path, uInt *out_data, uInt *out_size,
 		path++;
 
 	if (*path == '\0') {
-		*out_data  = g_sfs.root_objc_block;
+		*out_data  = g_sfs.root_dir_first_oc;
 		*out_size  = 0;
 		*out_bits  = OTYPE_DIR;
 		return NO_ERROR;
 	}
 
-	/* Start from the root directory's first ObjectContainer. */
-	uInt cur_dir_oc = g_sfs.root_objc_block;
+	/* Start from the root directory's first ObjectContainer --
+	 * NOT the rootobjc block. See sfs_open_volume() above: the
+	 * rootobjc block contains the "root directory object" whose
+	 * own firstdirblock is where the volume's top-level entries
+	 * actually live. */
+	uInt cur_dir_oc = g_sfs.root_dir_first_oc;
 
 	const Byte *cur = path;
 	while (*cur) {
@@ -696,8 +752,13 @@ amiga_sfs(Environ *e, Filesys_action what, Instance *disk,
 			return E_NO_FILE;
 
 		if (bits & OTYPE_DIR) {
-			cprintf(e, "SFS%s volume:\n",
-				(g_sfs.dostype == 2) ? "\\2" : "\\0");
+			if (g_sfs.volume_name_len)
+				cprintf(e, "SFS%s volume \"%s\":\n",
+					(g_sfs.dostype == 2) ? "\\2" : "\\0",
+					(char *)g_sfs.volume_name);
+			else
+				cprintf(e, "SFS%s volume:\n",
+					(g_sfs.dostype == 2) ? "\\2" : "\\0");
 			sfs_list_directory(e, data, scratch);
 		} else {
 			cprintf(e, "%8d  %s\n", (int)filesz, (char *)path);

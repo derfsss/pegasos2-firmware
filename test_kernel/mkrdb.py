@@ -369,11 +369,24 @@ SFS_OBJC_MAGIC = 0x4F424A43   # 'OBJC'
 SFS_BNDC_MAGIC = 0x424E4443   # 'BNDC'
 SFS_STRUCTURE_VERSION = 3
 
+# Block-number layout inside the partition (all 512 B blocks):
+#   block 0       boot block (DosType only)
+#   block 1       primary rootblock
+#   block 2       root ObjectContainer -- holds one fsObject (the
+#                 volume's root-directory object, a dir whose name is
+#                 the volume label); its dir.firstdirblock = block 4
+#   block 3       extent B+-tree root (leaf)
+#   block 4       top-level directory's first OC -- holds test.elf
+#   blocks 5..    raw FFS-flavour data blocks for test.elf
+#   (last block)  secondary rootblock
 SFS_ROOT_BLK     = 1
 SFS_ROOTOBJC_BLK = 2
 SFS_EXTBT_BLK    = 3
-SFS_DATA_START   = 4
+SFS_ROOTDIR_OC_BLK = 4
+SFS_DATA_START   = 5
 SFS_ROOTNODE     = 1
+SFS_ROOTDIR_NODE = 2
+SFS_FILE_NODE    = 3
 
 
 def sfs_checksum(block_bytes):
@@ -415,41 +428,72 @@ def build_sfs_root_block(ownblock, seqno, totalblocks,
     return bytes(blk)
 
 
-def build_sfs_root_objc(ownblock, file_name, file_data, file_size,
-                         file_node):
-    """Root ObjectContainer with a single file entry. Emits:
-        bheader(12) + parent(4) + next(4) + prev(4) + fsObject(var)
-       fsObject fixed header is 25 bytes, followed by NUL-terminated
-       name and NUL-terminated comment (empty here)."""
-    blk = bytearray(BLOCK_SIZE)
-    # bheader
-    struct.pack_into(">I", blk, 0, SFS_OBJC_MAGIC)
-    struct.pack_into(">I", blk, 8, ownblock)
-    # parent = ROOTNODE (by convention)
-    struct.pack_into(">I", blk, 12, SFS_ROOTNODE)
-    struct.pack_into(">I", blk, 16, 0)   # next OC
-    struct.pack_into(">I", blk, 20, 0)   # previous OC
-
-    # First fsObject at +24.
-    off = 24
+def _write_fsobject(blk, off, *, node, is_dir, name,
+                     data_field, size_field):
+    """Write a 25-byte fsObject header + name + empty comment.
+    Returns the offset just past the written record (2-byte aligned)."""
     struct.pack_into(">H", blk, off + 0, 0)          # owneruid
     struct.pack_into(">H", blk, off + 2, 0)          # ownergid
-    struct.pack_into(">I", blk, off + 4, file_node)  # objectnode
+    struct.pack_into(">I", blk, off + 4, node)       # objectnode
     struct.pack_into(">I", blk, off + 8, 0x0F)       # protection
-    struct.pack_into(">I", blk, off + 12, file_data) # file.data = first-extent key
-    struct.pack_into(">I", blk, off + 16, file_size) # file.size
+    struct.pack_into(">I", blk, off + 12, data_field)
+    struct.pack_into(">I", blk, off + 16, size_field)
     struct.pack_into(">I", blk, off + 20, 0)         # datemodified
-    blk[off + 24] = 0                                # bits = 0 (file, not dir, no link)
+    blk[off + 24] = 0x80 if is_dir else 0            # OTYPE_DIR = 0x80
 
-    # Name (NUL-terminated)
-    name_bytes = file_name.encode('ascii') + b'\x00'
+    name_bytes = name.encode('ascii') + b'\x00'
     blk[off + 25 : off + 25 + len(name_bytes)] = name_bytes
-    # Comment (empty, just NUL)
     comment_off = off + 25 + len(name_bytes)
-    blk[comment_off] = 0
+    blk[comment_off] = 0                             # empty comment
+    end = comment_off + 1
+    if end & 1:
+        end += 1
+    return end
 
-    # Next fsObject's objectnode field (at the 2-byte-aligned next
-    # offset) stays zero -- our reader stops when it sees node==0.
+
+def build_sfs_root_objc(ownblock, volume_name, rootdir_firstblock):
+    """Root ObjectContainer. Per objects.h:
+          'The Root ObjectContainer contains the Root directory
+           Object. The name of this Object is the name of the
+           volume. It is identical to a normal directory Object.'
+       So the ONLY entry here is a directory-flavour fsObject
+       whose name is the volume label and whose dir.firstdirblock
+       points at the top-level directory's first OC."""
+    blk = bytearray(BLOCK_SIZE)
+    struct.pack_into(">I", blk, 0, SFS_OBJC_MAGIC)
+    struct.pack_into(">I", blk, 8, ownblock)
+    struct.pack_into(">I", blk, 12, SFS_ROOTNODE)    # parent
+    struct.pack_into(">I", blk, 16, 0)                # next OC
+    struct.pack_into(">I", blk, 20, 0)                # previous OC
+
+    _write_fsobject(blk, 24,
+                    node=SFS_ROOTDIR_NODE,
+                    is_dir=True,
+                    name=volume_name,
+                    data_field=0,                    # hashtable = none
+                    size_field=rootdir_firstblock)   # firstdirblock
+
+    struct.pack_into(">I", blk, 4, sfs_checksum(bytes(blk)))
+    return bytes(blk)
+
+
+def build_sfs_topdir_oc(ownblock, file_name, file_data, file_size):
+    """Top-level directory OC -- actual user-visible entries. Holds
+    a single file entry for test.elf; our reader walks the OC chain
+    via be_next, which stays 0 here because we have only one block."""
+    blk = bytearray(BLOCK_SIZE)
+    struct.pack_into(">I", blk, 0, SFS_OBJC_MAGIC)
+    struct.pack_into(">I", blk, 8, ownblock)
+    struct.pack_into(">I", blk, 12, SFS_ROOTDIR_NODE) # parent = root dir
+    struct.pack_into(">I", blk, 16, 0)                # next OC
+    struct.pack_into(">I", blk, 20, 0)                # previous OC
+
+    _write_fsobject(blk, 24,
+                    node=SFS_FILE_NODE,
+                    is_dir=False,
+                    name=file_name,
+                    data_field=file_data,            # first-extent key
+                    size_field=file_size)
 
     struct.pack_into(">I", blk, 4, sfs_checksum(bytes(blk)))
     return bytes(blk)
@@ -502,10 +546,15 @@ def build_sfs_filesystem(payload, partition_blocks, dostype=DOSTYPE_SFS2):
 
     blocks[SFS_ROOTOBJC_BLK] = build_sfs_root_objc(
         ownblock=SFS_ROOTOBJC_BLK,
+        volume_name="TEST",
+        rootdir_firstblock=SFS_ROOTDIR_OC_BLK,
+    )
+
+    blocks[SFS_ROOTDIR_OC_BLK] = build_sfs_topdir_oc(
+        ownblock=SFS_ROOTDIR_OC_BLK,
         file_name="test.elf",
         file_data=SFS_DATA_START,
         file_size=len(payload),
-        file_node=3,
     )
 
     blocks[SFS_EXTBT_BLK] = build_sfs_extent_tree(
