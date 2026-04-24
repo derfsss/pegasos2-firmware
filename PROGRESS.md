@@ -107,8 +107,28 @@ ExtInt → CI Tier-B → SMBus):
    New `ls-pci` Forth word walks both /pci@X packages and prints
    child nodes; observed on QEMU, all VT8231 sub-functions (fn0-
    fn6) plus bochs-VGA present with correct classifications.
-   Downstream milestones planned: M2 IDE driver (pull ata.c +
-   atadisk.c, native-mode port with msec timeouts), M3 deblock
+   Block 2/N (`a79e0f7`): VT8231 PCI IDE driver attaches and
+   IDENTIFYs the AOS4 install CD. Pulled upstream isa/atadisk.c
+   unchanged (1236 LOC, already uses get_msecs timeouts so no
+   port needed). Replaced isa/ata.c (ISA-bus glue, hard-coded
+   legacy ports) with pegasos2-specific ide_driver.c that
+   translates PCI I/O port N -> CPU MMIO 0xFE000000+N via
+   mmio_read8/mmio_read16_le (new 16-bit LE helpers in io.h).
+   install_ide_driver scans /pci@80000000 children for class-code
+   0x0101XX, reads BAR0-3 (legacy-compat falls back to
+   0x1F0/0x3F6/0x170/0x376), calls probe_ata_disks with the
+   pegasos2 read/write callbacks. Controller methods (open/close/
+   decode-unit/encode-unit) installed on the IDE package so
+   M3/M4 can navigate /pci@.../ide@c,1/cd@0 paths. test-ide-probe
+   Forth word verifies: with Pegasos2InstallCD-53.54.iso attached,
+   reports `cd@0,0 ATAPI` (IDENTIFY_PACKET + READ_CAPACITY both
+   succeeded).
+   Gotcha worth recording: prop_get_str() truncates binary
+   properties at the first NUL byte, which silently fails for
+   PCI binding properties (reg/assigned-addresses/ranges) whose
+   physhi often has a leading 0x00. Always use find_table +
+   ent->v.array + ent->len for binary props.
+   Downstream milestones planned: M3 deblock
    cache, M4 ISO9660 FS + fs/fs dispatcher, M5 /aliases + test-
    media generation, M6 machine_go → machine_jump_os integration
    + `boot cd /test.elf` end-to-end, M7 NVRAM defaults +
@@ -186,6 +206,7 @@ enabled in the default build.
 ## Commit history (as of this writing)
 
 ```
+a79e0f7  Block 2/N: VT8231 PCI IDE driver attaches + IDENTIFY works
 338af27  Block 1/N: PCI device-tree installer + ls-pci smoke test
 4cb021f  Boot 5/N: BATs + MSR[IR|DR] at OS handoff (spec 07 translation-on)
 b2699a6  Boot 4/N+2: relocate x86emu to 0x01000000; spec-07 heap compliance
