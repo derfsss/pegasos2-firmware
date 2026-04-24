@@ -281,7 +281,8 @@ OF_MACHDEP_OBJS := \
     $(BUILD)/of_boot_kernel_asm.o \
     $(BUILD)/of_pci_tree.o \
     $(BUILD)/of_ide_driver.o \
-    $(BUILD)/of_amiga_rdb.o
+    $(BUILD)/of_amiga_rdb.o \
+    $(BUILD)/of_amiga_ffs.o
 
 $(BUILD)/of_platform.o: $(SF_MACHDEP)/platform.c | $(BUILD)
 	$(CC) $(SF_CFLAGS) -I$(MACHDEP) -I$(SF)/fs -c $< -o $@
@@ -307,6 +308,14 @@ $(BUILD)/of_ide_driver.o: $(SF_MACHDEP)/ide_driver.c | $(BUILD)
 # readers land (B2+), they'll be matched on the DosType inside
 # each partition's pb_Environment.
 $(BUILD)/of_amiga_rdb.o: $(SF_MACHDEP)/amiga_rdb.c | $(BUILD)
+	$(CC) $(SF_CFLAGS) -I$(SF)/fs -c $< -o $@
+
+# Arc FS-B, Block 2: Amiga OFS/FFS/Intl/LNFS readonly reader.
+# Covers DOS\0..\3 (original FFS + international) and DOS\6/\7
+# (long-name + FFS2). Clean-room implementation based on public
+# Laurent Clévy adflib FAQ + Olaf Barthel DCFS/LNFS Low Level Data
+# Structures page; no GPL code copied. Needs -I$(SF)/fs for fs.h.
+$(BUILD)/of_amiga_ffs.o: $(SF_MACHDEP)/amiga_ffs.c | $(BUILD)
 	$(CC) $(SF_CFLAGS) -I$(SF)/fs -c $< -o $@
 
 # Append OF to the firmware link target. phase1_c_main() calls SF's
