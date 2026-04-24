@@ -199,7 +199,8 @@ OF_SUBSET := \
     $(BUILD)/of_deblock.o \
     $(BUILD)/of_disklbl.o \
     $(BUILD)/of_fs.o \
-    $(BUILD)/of_iso9660.o
+    $(BUILD)/of_iso9660.o \
+    $(BUILD)/of_exe.o
 
 # isa/atadisk.c: generic ATA/ATAPI disk driver pulled in Block 2/N.
 # Compiled with an extra include path for ../scsi/scsi.h (which its
@@ -232,6 +233,13 @@ $(BUILD)/of_fs.o: $(SF)/fs/fs.c | $(BUILD)
 # platform.c so disklbl/fs.c's file_system() dispatch routes
 # FS_PROBE/FS_LIST/FS_LOAD to it.
 $(BUILD)/of_iso9660.o: $(SF)/fs/iso9660.c | $(BUILD)
+	$(CC) $(SF_CFLAGS) -c $< -o $@
+
+# Block 6/N: exe/exe.c (exec_is_exec, exec_load, exec_length,
+# exec_load_symbols, exec_addr2sym, exec_sym2addr). Dispatcher over
+# our machdep-supplied g_exec_list[]. Lives in exe/ subdir; its
+# "exe.h" include resolves via source-dir lookup.
+$(BUILD)/of_exe.o: $(SF)/exe/exe.c | $(BUILD)
 	$(CC) $(SF_CFLAGS) -c $< -o $@
 
 .PHONY: of-sf-subset

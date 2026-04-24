@@ -16,6 +16,7 @@
 
 #include "defs.h"
 #include "fs.h"
+#include "exe.h"
 
 /* --------------------------------------------------------------- *
  *  g_filesys[] -- filesystem driver registry consumed by fs/fs.c's *
@@ -30,6 +31,22 @@ extern Filesys g_iso9660_fs;
 
 Filesys *g_filesys[] = {
 	&g_iso9660_fs,
+	NULL
+};
+
+/* --------------------------------------------------------------- *
+ *  g_exec_list[] -- binary image loaders for SF's f_load/f_go     *
+ *  path. exec_is_exec() iterates this list until one entry's      *
+ *  is_exec returns TRUE; exec_load() then invokes that entry's    *
+ *  load callback. pegasos2_ppc_elf_exec is defined in             *
+ *  boot_kernel.c and wraps our spec-07 validator + PT_LOAD walker *
+ *  so the M1..M5 hardening coverage applies to real boot too.     *
+ *  NULL-terminated. M8 may add &pegasos2_aout_exec etc. here.     *
+ * --------------------------------------------------------------- */
+extern Exec_entry pegasos2_ppc_elf_exec;
+
+Exec_entry *g_exec_list[] = {
+	&pegasos2_ppc_elf_exec,
 	NULL
 };
 
@@ -111,9 +128,106 @@ CC(machine_font)
  */
 CC(machine_probe_all)       { (void)e; return NO_ERROR; }
 CC(machine_secondary_diag)  { (void)e; return NO_ERROR; }
-CC(machine_init_program)    { (void)e; return NO_ERROR; }
-CC(machine_go)              { (void)e; return NO_ERROR; }
-CC(machine_init_load)       { (void)e; return NO_ERROR; }
+
+/*
+ * machine_init_load (--): called by SF's admin.c:try_load before
+ * invoking the disk's `load` method. Must set e->load to a
+ * DRAM address where the file contents will be buffered. Per
+ * spec 07 §Load-address, the canonical default is 0x00400000
+ * (4 MiB mark) -- situated above SF's malloc pool
+ * (0x00200000..0x003FFFFF, Boot 4/N+2 §Load-address) and below
+ * x86emu's 1 MiB buffer (0x01000000..0x010FFFFF, also Boot
+ * 4/N+2). Uses g_machine_memory+g_machine_memory_size exactly
+ * like bebox/i386 machdeps; that arithmetic on our setup yields
+ * 0x00400000 because the SF pool ends there.
+ */
+CC(machine_init_load)
+{
+	/*
+	 * Spec 07 §Load-address: default kernel load at 0x00400000
+	 * (4 MiB mark). SF pool ends at 0x003FFFFF (Boot 4/N+2); the
+	 * default load buffer starts immediately above. x86emu's 1
+	 * MiB buffer is at 0x01000000 (Boot 4/N+2), so we have 12 MiB
+	 * of clear buffer between 0x00400000 and 0x00FFFFFF for
+	 * typical kernel images (amigaboot.of is ~36 KiB, vmlinux
+	 * ~1-4 MiB).
+	 *
+	 * NOT `g_machine_memory + g_machine_memory_size` (the
+	 * bebox/i386 pattern) because our g_machine_memory_size
+	 * reports the whole DRAM available to the OS (510 MiB on
+	 * QEMU -m 512), not just the malloc pool. That sum lands at
+	 * DRAM top (0x20000000) which is past the last valid byte.
+	 */
+	e->load = (Byte *)0x00400000u;
+	return NO_ERROR;
+}
+
+/*
+ * machine_init_program (--): called by f_init_program from
+ * admin.c:1223 after the image is in e->load / e->loadlen.
+ * Probes g_exec_list[] to pick a handler and stashes it in
+ * e->loadentry; returns NO_ERROR on match or E_BAD_IMAGE if
+ * nothing recognises the magic. The i386 machdep does the
+ * same one-liner (i386/machdep.c:621-626). try_load calls
+ * execute_word("init-program") at admin.c:1428 after the disk's
+ * load method fills e->load, so by the time we see e->load is
+ * fully populated.
+ */
+CC(machine_init_program)
+{
+	return exec_is_exec(e) ? NO_ERROR : E_BAD_IMAGE;
+}
+
+/*
+ * machine_go (--): the final transfer. Called from admin.c:1263
+ * when the user types `go` (or when `boot` expands to `load` +
+ * `go`). At entry e->load/e->loadlen contain the raw file bytes;
+ * exec_load() hands them to our handler's load callback which
+ * walks PT_LOADs and sets e->entrypoint + g_boot_image_high_end.
+ * Then we compute r1 and call machine_jump_os to perform the
+ * spec-07 handoff (BATs + MSR[IR|DR] + r3..r7 per
+ * boot_kernel.S). Does not return.
+ *
+ * If exec_load returns an error (malformed image) we propagate
+ * the error back to f_go, which reports it and returns the user
+ * to the ok prompt -- same behaviour as test-boot-bad validating
+ * the Forth-level boot-kernel word.
+ */
+extern uInt g_boot_image_high_end;
+extern void machine_jump_os(uInt entry, uInt ci_handler_addr,
+			    uInt stack_top);
+extern int  ci_handler(void *args);
+
+CC(machine_go)
+{
+	if (!exec_is_exec(e))
+		return E_BAD_IMAGE;
+
+	Retcode ret = exec_load(e);
+	if (ret != NO_ERROR)
+		return ret;
+
+	/*
+	 * Stack pointer handed to the OS. Matches the f_boot_kernel
+	 * Forth-path convention: 4 KiB of headroom above the highest
+	 * PT_LOAD end, aligned down to 16 (PPC SysV ABI). If the +4KiB
+	 * would overflow the address space, pin to high_end (the OS
+	 * relocates r1 immediately after entry).
+	 */
+	uInt stack_top = g_boot_image_high_end + 0x1000u;
+	if (stack_top < g_boot_image_high_end)
+		stack_top = g_boot_image_high_end;
+	stack_top &= ~0xFu;
+
+	cprintf(e, "machine_go: e_entry=0x%X r1=0x%X; transferring...\n",
+		(unsigned)e->entrypoint, (unsigned)stack_top);
+
+	machine_jump_os((uInt)e->entrypoint,
+			(uInt)(uPtr)&ci_handler, stack_top);
+
+	/* Unreachable; machine_jump_os does not return. */
+	return NO_ERROR;
+}
 
 
 /* --------------------------------------------------------------- *
@@ -330,43 +444,10 @@ static const Initentry init_pegasos2[] = {
 };
 
 /* --------------------------------------------------------------- *
- *  Stubs for exe/ symbol-lookup helpers                             *
+ *  exec_* helpers -- now supplied by upstream/smartfirmware/bin/of/ *
+ *  exe/exe.c, pulled into OF_SUBSET in Block 6/N alongside the      *
+ *  registration of pegasos2_ppc_elf_exec in g_exec_list[] above.    *
  * --------------------------------------------------------------- */
-
-/*
- * debug.c and exec.c call exec_addr2sym / exec_sym2addr / exec_length
- * for developer-level symbol lookup on loaded images. Their real
- * implementations live in upstream/smartfirmware/bin/of/exe/exe.c
- * which we defer (its transitive closure pulls in ELF/COFF/a.out
- * loaders we don't need for the ok prompt).
- *
- * Returning NULL / 0 keeps the callers on their "not found" path,
- * which is the correct behaviour when no image has been loaded yet.
- * The real file can replace these stubs at a later commit.
- */
-struct Sym_ent;  /* opaque -- defined in exe/exe.h */
-
-struct Sym_ent *
-exec_addr2sym(Environ *e, void *list, Cell addr)
-{
-	(void)e; (void)list; (void)addr;
-	return NULL;
-}
-
-struct Sym_ent *
-exec_sym2addr(Environ *e, void *list, Byte *name, Int len)
-{
-	(void)e; (void)list; (void)name; (void)len;
-	return NULL;
-}
-
-Retcode
-exec_length(Environ *e, Cell *out)
-{
-	(void)e;
-	if (out) *out = 0;
-	return NO_ERROR;
-}
 
 /* --------------------------------------------------------------- *
  *  logo_pixmap placeholder                                          *
