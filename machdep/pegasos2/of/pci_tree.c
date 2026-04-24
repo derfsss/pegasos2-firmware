@@ -182,19 +182,26 @@ static void format_unit_addr(char *buf, Int buflen, uint8_t dev, uint8_t fn)
 }
 
 /*
- * Build the node name: "<class-derived>@<unit-addr>". Writes into buf.
- * Example: "ide@c,1" for VT8231 IDE.
+ * Build the genus-only node name: "ide", "isa", "usb", etc. The
+ * unit-addr suffix ("@c,1") is NOT baked into the `name` property;
+ * it is derived at display/match time by SF's package_name() which
+ * calls decode-phys(reg) + encode-unit(parent) -- our f_pci_encode_unit
+ * returns "c,1" from the reg property's config-space physhi, and
+ * package_name appends "@" between them to produce the canonical
+ * "ide@c,1" form.
+ *
+ * An earlier draft baked the unit-addr into the name ("ide@c,1"),
+ * which caused package_name to emit "ide@c,1@c,1" (doubled suffix)
+ * AND broke path navigation (name_match compared requested "ide"
+ * to stored "ide@c,1" and failed). IEEE-1275 §3.5 mandates that
+ * the name property is the genus only.
  */
 static void build_node_name(uint32_t classcode, uint16_t vendid,
 			    uint16_t devid, uint8_t dev, uint8_t fn,
 			    char *buf, Int buflen)
 {
-	char cls[24];
-	char ua[8];
-	class_to_name(classcode, vendid, devid, cls, sizeof cls);
-	format_unit_addr(ua, sizeof ua, dev, fn);
-	bprintf(buf, "%s@%s", cls, ua);
-	(void)buflen;
+	(void)dev; (void)fn;
+	class_to_name(classcode, vendid, devid, buf, buflen);
 }
 
 /*
@@ -560,6 +567,162 @@ static Retcode walk_bus(Environ *e, Package *buspkg, int host, uint8_t bus)
 }
 
 /*
+ * PCI bus decode-unit / encode-unit -- the minimum subset needed for
+ * SF's resolve_path to navigate /pci@<host>/<child>@<unit> paths and
+ * for package_name() to build display names like "ide@c,1".
+ *
+ * Our children all use config-space physhi (space=0) in their `reg`
+ * property's first entry (see install_one_device -> set_reg_prop,
+ * which always encodes the config-space descriptor first). That
+ * means decode-unit only needs to handle the config-space form:
+ *     "DD[,FF[,RR]]"  ->  (physhi=PCI_PHYSHI_MK(cfg, bus, DD, FF, RR),
+ *                           physmid=0, physlo=0)
+ * where bus is read from the parent bus's first `bus-range` cell
+ * (we always set bus-range=<0 0> in create_pci_host_package, so
+ * bus=0 for now; honour the property anyway for future PPB children).
+ *
+ * We deliberately skip the full IEEE-1275 PCI binding form (the
+ * optional "n", "i|m|x|u", "t", "p" prefixes for non-relocatable +
+ * space + aliased + prefetch flags) -- those only matter when
+ * clients reference memory/IO BAR regions by path, which nothing
+ * in our M3..M7 arc does. If a future milestone needs them, port
+ * SF's f_pci_decode_unit from pci/pci.c:280-433 verbatim.
+ */
+
+static Int parse_hex_field(Byte **ps, Int *pn)
+{
+	Byte *s = *ps;
+	Int n = *pn;
+	Int val = 0;
+
+	while (n > 0) {
+		int c = *s;
+		int d;
+		if (c >= '0' && c <= '9') d = c - '0';
+		else if (c >= 'a' && c <= 'f') d = 10 + c - 'a';
+		else if (c >= 'A' && c <= 'F') d = 10 + c - 'A';
+		else break;
+		val = (val << 4) | d;
+		s++; n--;
+	}
+	*ps = s;
+	*pn = n;
+	return val;
+}
+
+static Int get_parent_bus_number(Environ *e)
+{
+	/* bus-range's first cell is the primary bus number of this bus.
+	 * Decoded from the binary property's first 4 big-endian bytes;
+	 * don't use prop_get_str (NUL-byte truncation -- see M2 gotcha). */
+	Entry *br = find_table(e->currpkg->props,
+			       (Byte *)"bus-range", CSTR);
+	if (br == NULL || br->len < (Int)sizeof(Int))
+		return 0;
+	Byte *p = (Byte *)br->v.array;
+	return ((Int)p[0] << 24) | ((Int)p[1] << 16) |
+	       ((Int)p[2] << 8)  | (Int)p[3];
+}
+
+/* decode-unit (str len -- phys.lo phys.mid phys.hi) */
+CC(f_pci_decode_unit)
+{
+	Byte *str;
+	Int slen;
+
+	IFCKSP(e, 2, 3);
+	POP(e, slen);
+	POPT(e, str, Byte *);
+	setstrlen(&str, &slen);
+
+	Int bus  = get_parent_bus_number(e);
+	Int dev  = parse_hex_field(&str, &slen);
+	Int func = 0;
+	Int reg  = 0;
+
+	if (slen > 0 && *str == ',') {
+		str++; slen--;
+		func = parse_hex_field(&str, &slen);
+	}
+	if (slen > 0 && *str == ',') {
+		str++; slen--;
+		reg  = parse_hex_field(&str, &slen);
+	}
+
+	PUSH(e, 0);                                              /* phys.lo */
+	PUSH(e, 0);                                              /* phys.mid */
+	PUSH(e, (Cell)physhi_mk(0, 0, 0, bus, dev, func, reg));  /* phys.hi */
+	return NO_ERROR;
+}
+
+/* encode-unit (phys.lo phys.mid phys.hi -- str len) */
+CC(f_pci_encode_unit)
+{
+	static Byte buf[32];
+	Cell physhi;
+	Cell physmid;
+	Cell physlo;
+
+	IFCKSP(e, 3, 2);
+	POP(e, physhi);
+	POP(e, physmid);
+	POP(e, physlo);
+	(void)physmid;
+	(void)physlo;
+
+	unsigned dev   = (unsigned)((physhi >> 11) & 0x1Fu);
+	unsigned func  = (unsigned)((physhi >> 8)  & 0x07u);
+	unsigned reg   = (unsigned)((physhi >> 0)  & 0xFFu);
+	unsigned space = (unsigned)((physhi >> 24) & 0x07u);
+
+	if (space == 0) {                    /* config-space */
+		if (reg != 0)
+			bprintf((char *)buf, "%x,%x,%x", dev, func, reg);
+		else if (func != 0)
+			bprintf((char *)buf, "%x,%x", dev, func);
+		else
+			bprintf((char *)buf, "%x", dev);
+	} else {
+		/* Non-config paths shouldn't occur for our children; fall
+		 * back to a bare dev,func rendering so nothing explodes. */
+		bprintf((char *)buf, "%x,%x", dev, func);
+	}
+
+	PUSHP(e, buf);
+	PUSH(e, (Cell)strlen((char *)buf));
+	return NO_ERROR;
+}
+
+/*
+ * open / close for the /pci@X bus package. open-dev walks the
+ * requested path and calls `open` on every intermediate node; if
+ * /pci@X has no open method the whole open-dev fails at the first
+ * segment with E_NO_METHOD. The bus doesn't have any real setup
+ * to do here (phase-1's pci_walker already programmed BARs / cmd
+ * bits / bridge windows), so push FTRUE and return.
+ */
+CC(f_pci_bus_open)
+{
+	IFCKSP(e, 0, 1);
+	PUSH(e, FTRUE);
+	return NO_ERROR;
+}
+
+CC(f_pci_bus_close)
+{
+	(void)e;
+	return NO_ERROR;
+}
+
+static const Initentry pci_bus_methods[] = {
+	{ (Byte *)"open",        f_pci_bus_open,    INVALID_FCODE, F_NONE, T_FUNC HELP("") },
+	{ (Byte *)"close",       f_pci_bus_close,   INVALID_FCODE, F_NONE, T_FUNC HELP("") },
+	{ (Byte *)"decode-unit", f_pci_decode_unit, INVALID_FCODE, F_NONE, T_FUNC HELP("") },
+	{ (Byte *)"encode-unit", f_pci_encode_unit, INVALID_FCODE, F_NONE, T_FUNC HELP("") },
+	{ NULL, NULL, INVALID_FCODE, F_NONE, T_FUNC HELP("") },
+};
+
+/*
  * Create a top-level /pci@<cpu_base> package with all the bus-level
  * properties CHRP clients expect. Parent = / so the ranges property
  * encodes #a(pci=3) + #a(root=1) + #s(pci=2) = 6 cells per entry.
@@ -653,6 +816,10 @@ static Package *create_pci_host_package(Environ *e, const char *genus,
 			     (Byte *)"8259-interrupt-acknowledge", CSTR,
 			     (Int)inta_virt);
 	}
+
+	/* Register decode-unit / encode-unit on this bus so SF's
+	 * resolve_path can navigate to children like ide@c,1. */
+	(void)init_entries(e, pkg->dict, pci_bus_methods);
 
 	return pkg;
 }

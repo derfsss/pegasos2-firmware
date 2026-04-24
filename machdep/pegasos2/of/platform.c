@@ -15,6 +15,16 @@
  */
 
 #include "defs.h"
+#include "fs.h"
+
+/* --------------------------------------------------------------- *
+ *  g_filesys[] -- filesystem driver registry consumed by fs/fs.c's *
+ *  file_system() dispatcher. Empty until M4 registers ISO9660.     *
+ *  disklbl.c calls file_system() from its load / list-files Forth  *
+ *  methods; those will return E_NO_FILESYS here, which is correct  *
+ *  behaviour for a Pegasos2 that has no FS drivers installed yet.  *
+ * --------------------------------------------------------------- */
+Filesys *g_filesys[] = { NULL };
 
 /* --------------------------------------------------------------- *
  *  Default NVRAM contents (g_nvram)                                 *
@@ -282,6 +292,7 @@ extern Retcode f_test_boot(Environ *e);
 extern Retcode f_test_boot_bad(Environ *e);
 extern Retcode f_ls_pci(Environ *e);
 extern Retcode f_test_ide_probe(Environ *e);
+extern Retcode f_test_read_block(Environ *e);
 
 static const Initentry init_pegasos2[] = {
 	{ (Byte *)"test-ci", f_test_ci, INVALID_FCODE, F_NONE, T_FUNC HELP(
@@ -300,6 +311,8 @@ static const Initentry init_pegasos2[] = {
 			"(--)  walk /pci@80000000 and /pci@c0000000 and print each child device") },
 	{ (Byte *)"test-ide-probe", f_test_ide_probe, INVALID_FCODE, F_NONE, T_FUNC HELP(
 			"(--)  print each IDE disk/cd discovered by install_ide_driver") },
+	{ (Byte *)"test-read-block", f_test_read_block, INVALID_FCODE, F_NONE, T_FUNC HELP(
+			"(--)  open cd@0,0, read LBA 16, verify ISO9660 CD001 signature") },
 	{ NULL, NULL, INVALID_FCODE, F_NONE, T_FUNC HELP("") }
 };
 
@@ -444,8 +457,24 @@ EC(install_powerpc_cpu);
 EC(install_display);
 EC(install_failsafe);
 EC(install_pci_tree);
+EC(install_deblocker);
+EC(install_disklabel);
 EC(install_ide_driver);
 
+/*
+ * Install order notes:
+ *  - install_pci_tree must run before install_ide_driver (which
+ *    walks the PCI tree to find the VT8231 IDE controller).
+ *  - install_deblocker and install_disklabel must run before any
+ *    attempt to open() a disk child (atadisk's f_ata_disk_open
+ *    calls $open-package on both /packages/deblocker and
+ *    /packages/disk-label). install_ide_driver ITSELF only calls
+ *    probe_ata_disks, which does IDENTIFY+READ_CAPACITY and
+ *    creates disk-package nodes but does not open them, so order
+ *    between ide_driver and deblocker/disklabel is not strictly
+ *    constrained here. Placing deblocker/disklabel before
+ *    ide_driver for clarity.
+ */
 const Command install_list[] = {
 	install_root,
 	install_chosen,
@@ -455,6 +484,8 @@ const Command install_list[] = {
 	install_display,
 	install_failsafe,
 	install_pci_tree,
+	install_deblocker,
+	install_disklabel,
 	install_ide_driver,
 	NULL
 };

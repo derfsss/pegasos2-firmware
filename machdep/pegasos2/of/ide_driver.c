@@ -171,16 +171,47 @@ C(f_ide_encode_unit)
 	return NO_ERROR;
 }
 
+/*
+ * dma-alloc (size -- buf) / dma-free (buf size --)
+ *
+ * The deblocker (/packages/deblocker) and disk-label
+ * (/packages/disk-label) both ask their grandparent (= this IDE
+ * controller package) for a DMA-capable buffer when opening. On
+ * Pegasos2 with no IOMMU and with MV64361-routed PCI DMA hitting
+ * identity-mapped DRAM, "DMA-capable" is identical to "normal
+ * malloc" -- the device sees the same physical address we see.
+ * atadisk.c's PIO path never actually invokes DMA across the bus
+ * (READ/WRITE commands transfer via the DATA register); the
+ * buffer is just sector staging, so any reachable heap is fine.
+ *
+ * If we add real PCI bus-master DMA later (UDMA mode), this
+ * becomes the right hook point for a cache-coherent allocator.
+ */
 C(f_ide_dma_alloc)
 {
-	(void)e;
-	return E_ABORT;   /* PIO only in M2 */
+	Cell size;
+	Byte *buf;
+
+	IFCKSP(e, 1, 1);
+	POP(e, size);
+	buf = (Byte *)malloc((size_t)size);
+	if (buf == NULL)
+		return E_OUT_OF_MEMORY;
+	PUSHP(e, buf);
+	return NO_ERROR;
 }
 
 C(f_ide_dma_free)
 {
-	(void)e;
-	return E_ABORT;
+	Cell size;
+	Byte *buf;
+
+	IFCKSP(e, 2, 0);
+	POP(e, size);
+	POPT(e, buf, Byte *);
+	(void)size;
+	free(buf);
+	return NO_ERROR;
 }
 
 C(f_ide_selftest)
@@ -284,9 +315,18 @@ CC(install_ide_driver)
 		return NO_ERROR;
 	}
 
-	/* Annotate the IDE node so downstream code can identify it. */
+	/*
+	 * Annotate the IDE node and set its address/size cells. ATA
+	 * disk packages use reg = <ctlr id 0> (2 address cells + 1
+	 * size cell) per atadisk.c:probe_ata_disk line 1198-1200.
+	 * Setting these explicitly matches the reg shape so
+	 * do_decode_phys/do_decode_reg in SF's resolve_path chain
+	 * extract the right number of cells.
+	 */
 	prop_set_str(ide->props, (Byte *)"device_type", CSTR,
 		     (Byte *)"ide", CSTR);
+	prop_set_int(ide->props, (Byte *)"#address-cells", CSTR, 2);
+	prop_set_int(ide->props, (Byte *)"#size-cells",    CSTR, 1);
 	Retcode mr = init_entries(e, ide->dict, ide_ctlr_methods);
 	if (mr != NO_ERROR) return mr;
 
@@ -344,9 +384,29 @@ atapi_type_str(Int classcode)
 }
 
 /*
+ * Read the (ctlr, id) pair from a disk child's `reg` property,
+ * which atadisk.c's probe_ata_disk encodes as <ctlr id 0> per
+ * isa/atadisk.c:1198-1200. reg is a binary property and its first
+ * byte is typically 0, so go straight to the Entry rather than
+ * prop_get_str (NUL-byte truncation -- Block 2/N gotcha).
+ */
+static int disk_reg(Package *c, Int *ctlr, Int *id)
+{
+	Entry *re = find_table(c->props, (Byte *)"reg", CSTR);
+	if (re == NULL || re->len < 2 * (Int)sizeof(Int))
+		return 0;
+	Byte *r = (Byte *)re->v.array;
+	*ctlr = ((Int)r[0] << 24) | ((Int)r[1] << 16) |
+	        ((Int)r[2] << 8)  | (Int)r[3];
+	*id   = ((Int)r[4] << 24) | ((Int)r[5] << 16) |
+	        ((Int)r[6] << 8)  | (Int)r[7];
+	return 1;
+}
+
+/*
  * Walk the IDE controller package's children (disk@ / cd@ packages
  * created by probe_ata_disks) and print identity info pulled from
- * each package's properties and PSelf struct.
+ * each package's properties.
  */
 CC(f_test_ide_probe)
 {
@@ -367,33 +427,158 @@ CC(f_test_ide_probe)
 			namelen = 1;
 		}
 
-		/* Fetch the reg property to decode ctlr,id. First cell is
-		 * ctlr (0 or 1), second is id (0 or 1), third is size (0). */
-		Byte *regp;
-		Int rlen;
-		Int ctlr = 0, id = 0;
-		if (prop_get_str(c->props, (Byte *)"reg", CSTR,
-				 &regp, &rlen) == NO_ERROR && rlen >= 8) {
-			ctlr = ((Int)regp[0] << 24) | ((Int)regp[1] << 16) |
-			       ((Int)regp[2] << 8)  | (Int)regp[3];
-			id   = ((Int)regp[4] << 24) | ((Int)regp[5] << 16) |
-			       ((Int)regp[6] << 8)  | (Int)regp[7];
-		}
+		Int ctlr = -1, id = -1;
+		disk_reg(c, &ctlr, &id);
 
 		Int is_atapi =
 			(find_table(c->props, (Byte *)"atapi", CSTR) != NULL)
 			? 1 : 0;
 
-		cprintf(e, "  %S@%x,%x  %s",
+		cprintf(e, "  %S@%x,%x  %s\n",
 			name, namelen, (Int)ctlr, (Int)id,
 			is_atapi ? "ATAPI" : "ATA");
 
 		(void)atapi_type_str(0);
-		cprintf(e, "\n");
 		found++;
 	}
 
 	if (!found)
 		cprintf(e, "test-ide-probe: no drives attached\n");
+	return NO_ERROR;
+}
+
+/*
+ * test-read-block (--)
+ *
+ * Finds the first ATAPI CD under the VT8231 IDE controller, opens
+ * it via open-dev on the full device path, seeks to LBA 16 (byte
+ * offset 0x8000), reads 2048 bytes via the deblocker, and verifies
+ * the ISO9660 primary volume descriptor signature: byte 0 = 0x01
+ * (VD type 1), bytes 1-5 = "CD001", byte 6 = 0x01 (VD version).
+ *
+ * This exercises the full block I/O chain that M4's ISO9660 and
+ * M6's boot-from-file will depend on:
+ *    open-dev  -> atadisk's f_ata_disk_open
+ *       -> $open-package deblocker (requires /packages/deblocker)
+ *       -> $open-package disk-label (requires /packages/disk-label)
+ *    seek      -> deblocker's f_deblock_seek (byte cursor)
+ *    read      -> deblocker's f_deblock_read
+ *       -> atadisk's f_ata_disk_read_blocks (ATAPI READ_BIG CDB)
+ *       -> pegasos2_ide_io_read / pegasos2_ide_io_write
+ *
+ * The CD's bus position depends on what the user passed to QEMU
+ * (-cdrom goes to the first free slot, usually secondary master on
+ * pegasos2 = cd@1,0), so we search rather than hard-code.
+ *
+ * Success line:  "test-read-block: OK CD001 @ LBA 16 on <path>"
+ * Failure line:  "test-read-block: FAIL <reason>"
+ */
+
+static int cdsig_ok(const uByte *b)
+{
+	return b[0] == 0x01 &&
+	       b[1] == 'C'  && b[2] == 'D'  && b[3] == '0' &&
+	       b[4] == '0'  && b[5] == '1'  && b[6] == 0x01;
+}
+
+/*
+ * Locate the first ATAPI (CD) child under the IDE controller.
+ * Returns NULL if no CD attached.
+ */
+static Package *find_first_cd(Environ *e)
+{
+	Package *ide = find_ide_controller(e);
+	if (ide == NULL) return NULL;
+	Package *c;
+	for (c = ide->children; c != NULL; c = c->link) {
+		if (find_table(c->props, (Byte *)"atapi", CSTR) != NULL)
+			return c;
+	}
+	return NULL;
+}
+
+CC(f_test_read_block)
+{
+	Instance *inst = NULL;
+	Retcode r;
+	Cell status;
+	Cell actual;
+	static uByte buf[2048];
+	Byte pathbuf[STR_SIZE];
+
+	Package *cd = find_first_cd(e);
+	if (cd == NULL) {
+		cprintf(e, "test-read-block: FAIL no ATAPI drive attached\n");
+		return NO_ERROR;
+	}
+	if (!get_device_name(e, cd, pathbuf)) {
+		cprintf(e, "test-read-block: FAIL could not get device name\n");
+		return NO_ERROR;
+	}
+
+	/* open-dev ( path-str path-len -- ihandle | 0 )  */
+	PUSHP(e, pathbuf);
+	PUSH(e, (Cell)strlen((char *)pathbuf));
+	r = execute_word(e, "open-dev");
+	if (r != NO_ERROR) {
+		cprintf(e, "test-read-block: FAIL open-dev %s rc=%d\n",
+			(char *)pathbuf, (Int)r);
+		return NO_ERROR;
+	}
+	POPT(e, inst, Instance *);
+	if (inst == NULL) {
+		cprintf(e, "test-read-block: FAIL open returned NULL "
+			"(path=%s)\n", (char *)pathbuf);
+		return NO_ERROR;
+	}
+
+	/* seek ( pos.lo pos.hi -- status )
+	 * LBA 16 * 2048 bytes/block = 32768 = 0x8000 bytes. */
+	PUSH(e, (Cell)0x8000);
+	PUSH(e, (Cell)0);
+	r = execute_method_name(e, inst, (Byte *)"seek", CSTR);
+	if (r != NO_ERROR) {
+		cprintf(e, "test-read-block: FAIL seek rc=%d\n", (Int)r);
+		goto close_and_return;
+	}
+	POP(e, status);
+	if (status != 0 && status != 1) {
+		cprintf(e, "test-read-block: FAIL seek status=%d\n",
+			(Int)status);
+		goto close_and_return;
+	}
+
+	/* read ( addr len -- actual ) */
+	memset(buf, 0, sizeof buf);
+	PUSHP(e, buf);
+	PUSH(e, (Cell)sizeof buf);
+	r = execute_method_name(e, inst, (Byte *)"read", CSTR);
+	if (r != NO_ERROR) {
+		cprintf(e, "test-read-block: FAIL read rc=%d\n", (Int)r);
+		goto close_and_return;
+	}
+	POP(e, actual);
+
+	if (actual != (Cell)sizeof buf) {
+		cprintf(e, "test-read-block: FAIL read actual=%d "
+			"(expected 2048)\n", (Int)actual);
+		goto close_and_return;
+	}
+
+	if (cdsig_ok(buf)) {
+		cprintf(e, "test-read-block: OK CD001 @ LBA 16 on %s\n",
+			(char *)pathbuf);
+	} else {
+		cprintf(e,
+			"test-read-block: FAIL bad signature "
+			"%02X %02X%02X%02X%02X%02X %02X on %s\n",
+			(Int)buf[0], (Int)buf[1], (Int)buf[2], (Int)buf[3],
+			(Int)buf[4], (Int)buf[5], (Int)buf[6],
+			(char *)pathbuf);
+	}
+
+close_and_return:
+	PUSHP(e, inst);
+	(void)execute_word(e, "close-dev");
 	return NO_ERROR;
 }

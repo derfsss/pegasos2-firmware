@@ -49,6 +49,14 @@ LDFLAGS := \
     -Wl,--build-id=none \
     -Wl,-Map=$(BUILD)/firmware.map
 
+# libgcc provides __udivdi3 / __umoddi3 (64-bit unsigned division +
+# modulo) referenced from deblock.c's seek method and any other 64-
+# bit arithmetic that appears in pulled upstream code. The PowerPC
+# soft-float cross-toolchain ships these as part of libgcc.a and they
+# are compatible with our BSD licensing via GCC's runtime library
+# exception. Link last so our own symbols win where they exist.
+LIBS := -lgcc
+
 PHASE1_OBJS := \
     $(BUILD)/reset.o \
     $(BUILD)/exceptions.o \
@@ -187,7 +195,10 @@ OF_SUBSET := \
     $(BUILD)/of_nvedit.o \
     $(BUILD)/of_nvram.o \
     $(BUILD)/of_client.o \
-    $(BUILD)/of_atadisk.o
+    $(BUILD)/of_atadisk.o \
+    $(BUILD)/of_deblock.o \
+    $(BUILD)/of_disklbl.o \
+    $(BUILD)/of_fs.o
 
 # isa/atadisk.c: generic ATA/ATAPI disk driver pulled in Block 2/N.
 # Compiled with an extra include path for ../scsi/scsi.h (which its
@@ -197,6 +208,23 @@ OF_SUBSET := \
 # window translation).
 $(BUILD)/of_atadisk.o: $(SF)/isa/atadisk.c | $(BUILD)
 	$(CC) $(SF_CFLAGS) -I$(SF)/scsi -c $< -o $@
+
+# Block 3/N: deblock.c (variable-size I/O on top of block devices)
+# and disklbl.c (disk-label partition handler). disklbl.c needs
+# fs/fs.h on the include path because it calls file_system() for
+# its load / list-files methods.
+$(BUILD)/of_deblock.o: $(SF)/deblock.c | $(BUILD)
+	$(CC) $(SF_CFLAGS) -c $< -o $@
+
+$(BUILD)/of_disklbl.o: $(SF)/disklbl.c | $(BUILD)
+	$(CC) $(SF_CFLAGS) -I$(SF)/fs -c $< -o $@
+
+# fs/fs.c: filesystem dispatcher (file_system, filesys_read_bytes).
+# Lives in fs/ subdir; its own source already finds fs.h via the
+# compiler's current-source-file include search. Other callers
+# (like disklbl.c) include via -I$(SF)/fs.
+$(BUILD)/of_fs.o: $(SF)/fs/fs.c | $(BUILD)
+	$(CC) $(SF_CFLAGS) -c $< -o $@
 
 .PHONY: of-sf-subset
 of-sf-subset: $(OF_SUBSET)
@@ -218,7 +246,7 @@ OF_MACHDEP_OBJS := \
     $(BUILD)/of_ide_driver.o
 
 $(BUILD)/of_platform.o: $(SF_MACHDEP)/platform.c | $(BUILD)
-	$(CC) $(SF_CFLAGS) -I$(MACHDEP) -c $< -o $@
+	$(CC) $(SF_CFLAGS) -I$(MACHDEP) -I$(SF)/fs -c $< -o $@
 
 $(BUILD)/of_ci_entry.o: $(SF_MACHDEP)/ci_entry.c | $(BUILD)
 	$(CC) $(SF_CFLAGS) -I$(MACHDEP) -c $< -o $@
@@ -287,7 +315,7 @@ of-test: $(OF_SUBSET) $(OF_MACHDEP_OBJS)
 	@$(PREFIX)nm -u $(BUILD)/of-test.o | sort -u
 
 $(ELF): $(OBJS) $(MACHDEP)/firmware.ld | $(BUILD)
-	$(CC) $(LDFLAGS) $(OBJS) -o $@
+	$(CC) $(LDFLAGS) $(OBJS) $(LIBS) -o $@
 
 $(FIRMWARE): $(ELF)
 	$(OBJCOPY) -O binary --pad-to 0xFFF80000 --gap-fill 0xff $< $@
