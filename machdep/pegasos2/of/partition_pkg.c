@@ -6,42 +6,48 @@
  *  modification, are permitted under the terms of the CodeGen source
  *  license reproduced in LICENSES/CodeGen-smartfirmware.txt.
  *
- *  Partition packages for Amiga RDB-partitioned disks.
+ *  Partition packages for Amiga RDB-partitioned disks, plus the
+ *  smart-boot Forth dispatcher that uses them.
  *
- *  amigaboot.of (the AOS4 OF-flavour bootloader) walks the device
- *  tree looking for nodes with device_type=block, then enumerates
- *  their child packages to find partitions to boot from. Without
- *  child partition packages amigaboot.of reports "No bootable
- *  devices found". This file creates one child package per RDB
- *  partition, with a working method table that translates partition-
- *  relative reads to disk-absolute reads via the parent disk's
- *  Instance.
+ *  IEEE-1275 OS loaders (amigaboot.of, MorphOS's morphos.of, etc.)
+ *  expect each disk's partitions to appear as child packages of the
+ *  disk's device-tree node, with a per-partition method table that
+ *  translates partition-relative reads into disk-absolute reads.
+ *  install_partition_packages() runs from install_list[] after
+ *  install_aliases; for each HD child of the IDE controller it
  *
- *  Usage: install_partition_packages() runs from install_list[]
- *  after install_aliases (which itself runs after install_ide_driver).
- *  We open the disk via open-dev, read its RDB at install time, and
- *  for each PartitionBlock create a child package with:
+ *    - opens the disk via open-dev,
+ *    - reads RDB block 0 + chases the PartitionBlock chain,
+ *    - creates one child package per partition, with:
  *
- *    properties:
- *      name          = pb_DriveName (BSTR copy, e.g. "DH0")
- *      device_type   = "block"
- *      reg           = <partition-index 0>
- *      partition-name = pb_DriveName (alternate property name some
- *                       loaders look for)
+ *        name          = pb_DriveName (BSTR copy, e.g. "DH0")
+ *        device_type   = "block"
+ *        reg           = <partition-index>
+ *        partition-name = pb_DriveName (alternate property some
+ *                         loaders look for)
+ *        dostype        = 4 raw bytes from de_DosType
+ *        boot-priority  = signed Int from de_BootPri
  *
- *    methods:
- *      open / close   -- per-instance state setup/teardown
- *      block-size     -- returns the partition's block size
- *      #blocks        -- returns the partition's block count
- *      max-transfer   -- delegated to parent disk
- *      read-blocks    -- (addr block# count -- read) translates block#
- *                        to absolute and calls parent's read-blocks
- *      read           -- byte-level read with cursor (uses seek state)
- *      seek           -- byte-level cursor set
- *      load           -- delegate to disklbl framework on parent
+ *      and a method table:
+ *
+ *        open / close   -- per-instance state setup/teardown
+ *        block-size     -- partition's block size
+ *        #blocks        -- partition's block count
+ *        max-transfer   -- delegated to parent disk
+ *        read-blocks    -- (addr block# count -- read) translates
+ *                          block# to absolute + forwards to parent
+ *        read           -- byte-level read using cursor + parent's
+ *                          read-blocks
+ *        seek           -- byte-level cursor set.
  *
  *  All methods run with inst->parent pointing at the parent disk's
- *  Instance, so we can call its methods via execute_method_name.
+ *  Instance, so they can dispatch to the parent's methods via
+ *  execute_method_name.
+ *
+ *  smart-boot (Forth word, registered in platform.c init_pegasos2[])
+ *  consumes the dostype + boot-priority properties to pick which
+ *  partition to load and which per-OS loader to dispatch to,
+ *  ordered by the comma-separated `boot-os-priority` NVRAM var.
  */
 
 #include "defs.h"
@@ -482,8 +488,6 @@ add_partitions_for_disk(Environ *e, Package *disk_pkg)
 		PartitionSelf *ps =
 			(PartitionSelf *)malloc(sizeof *ps);
 		if (ps == NULL) { r = E_OUT_OF_MEMORY; break; }
-		ps->start_byte = part_off / BLOCK_SIZE_DEFAULT *
-			BLOCK_SIZE_DEFAULT;  /* placeholder; set below */
 		ps->start_byte = p_start;
 		ps->size_bytes = p_size;
 		ps->block_size = (size_block_longs * 4u);
@@ -491,6 +495,11 @@ add_partitions_for_disk(Environ *e, Package *disk_pkg)
 		ps->n_blocks   = p_size / ps->block_size;
 		p->self = (struct pself *)ps;
 
+		/* init_entries returns NO_ERROR or E_OUT_OF_MEMORY; the
+		 * latter would leave the package without methods, but the
+		 * caller-side malloc that would precede that error already
+		 * happens above (PartitionSelf), so OOM here is statistically
+		 * impossible without first OOMing the smaller allocation. */
 		(void)init_entries(e, p->dict, partition_methods);
 
 		cprintf(e, "  partition %d: %s %dK @ disk byte 0x%X "

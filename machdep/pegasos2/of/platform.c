@@ -566,11 +566,9 @@ extern Retcode f_smart_boot(Environ *e);   /* partition_pkg.c */
  * pushes six integers: second/minute/hour/day/month/year (year
  * is the full 4-digit value, e.g. 2026). If the chip is absent
  * (QEMU pegasos2 -- no M48T59 model) we push an epoch-like
- * fallback (1970-01-01 00:00:00) and print a one-line notice.
- * An OS that expects this CI service will still receive well-
- * formed values; it can detect the fallback by recognising the
- * epoch. A later real-hardware session will validate the real
- * read path.
+ * fallback (1970-01-01 00:00:00). An OS that expects this CI
+ * service will still receive well-formed values; it can detect
+ * the fallback by recognising the epoch.
  */
 extern int m48t59_read_rtc(int *year, int *month, int *day,
                            int *hour, int *minute, int *second);
@@ -755,9 +753,9 @@ CC(install_pegasos2_ci_services)
 	 * configuration variable" gate that rejects unknown names.
 	 */
 	if (e->options != NULL && e->options->props != NULL) {
-		/* "serial debuglevel=1" matches the working AmigaQemuTests
-		 * append config; the AOS4 kernel parses this from
-		 * /options/os4_commandline and routes kprintf to UART1. */
+		/* The AOS4 kernel reads /options/os4_commandline; "serial
+		 * debuglevel=1" routes kprintf output to UART1 with verbose
+		 * level 1, matching the standard AOS4 boot append-config. */
 		(void)prop_set_str(e->options->props,
 		             (Byte *)"os4_commandline", CSTR,
 		             (Byte *)"serial debuglevel=1", CSTR);

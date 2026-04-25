@@ -249,30 +249,26 @@ machine_initialize(void)
 	/*
 	 * Probe actual DRAM size before computing the reported range.
 	 *
-	 * The 4 BATs cover 0..768 MiB unconditionally (machine_jump_os),
-	 * but the underlying DRAM may be smaller -- on QEMU this varies
-	 * per `-m N` and on real hardware per the populated SDRAM SIMMs.
-	 * If we report 768 MiB unconditionally, callers (e.g. amigaboot
-	 * walking /memory/available to pick a claim address near the
-	 * top) will allocate from the high range, get an address back
-	 * that has no DRAM behind it, and silently lose every write.
-	 * Symptom: amigaboot.of's add_disk_to_list buffer at 0x2CFE00A0
-	 * (claimed 32 MiB at 0x2CFE0000) never persists; scan_disks then
-	 * sees a list head pointing into the void; "No bootable devices
-	 * found".
+	 * The 4 BATs cover 0..PEGASOS2_DRAM_TOP unconditionally; the
+	 * physical DRAM behind them may be smaller (on QEMU this varies
+	 * with `-m N`, on real hardware with the populated SDRAM SIMMs).
+	 * If /memory/available reports more than the underlying physical
+	 * RAM, OS loaders that pick a claim address near the top --
+	 * amigaboot's per-disk record buffer is one example -- get an
+	 * address back that has no DRAM behind it and silently lose every
+	 * write.
 	 *
-	 * Probe approach: starting at the highest covered byte and
-	 * walking down in 16 MiB steps, write a unique pattern at each
-	 * candidate address, then read back. The first address that
-	 * reads back its OWN pattern is real DRAM; everything above it
-	 * is unmapped (QEMU returns 0 / aliases / write-discards). We
-	 * use distinct patterns per address so a wrap-around alias would
-	 * read back a NEIGHBOUR's pattern, not the one we just wrote.
+	 * Probe: walk down from the BAT-covered top in 16 MiB steps,
+	 * writing a unique pattern at each candidate address and reading
+	 * it back. The first address that reads back its OWN pattern is
+	 * real DRAM; everything above is either unmapped, write-discarded,
+	 * or aliasing low DRAM (the anchor sentinel at 0x00200000 catches
+	 * the alias case). We use distinct patterns per address so a
+	 * wrap-around alias reads back a neighbour's pattern, not the one
+	 * we just wrote.
 	 *
-	 * Granularity: 16 MiB. amigaboot's claim alignment is 4 KiB but
-	 * the false-positive risk is mostly at QEMU `-m N` boundaries
-	 * which are typically MiB-multiples; 16 MiB caps DRAM-top error
-	 * at the same granularity QEMU itself uses for its memory mapping.
+	 * Granularity: 16 MiB matches the smallest practical SDRAM bank
+	 * size on Pegasos II hardware and the typical QEMU `-m N` step.
 	 */
 	uInt dram_top = PEGASOS2_DRAM_TOP;
 	{
@@ -296,9 +292,7 @@ machine_initialize(void)
 			__asm__ volatile ("eieio; sync");
 
 			if (readback == expected && *anchor == 0xA5A5A5A5u) {
-				/* Genuine DRAM at addr+sizeof(uInt); top is
-				 * one STEP higher (we wrote at addr, so the
-				 * containing 16 MiB region is real). */
+				/* Containing 16 MiB region is real DRAM. */
 				dram_top = addr + STEP;
 				break;
 			}
@@ -306,9 +300,9 @@ machine_initialize(void)
 		*anchor = anchor_save;
 		__asm__ volatile ("eieio; sync");
 
-		/* If even FLOOR isn't real DRAM something is very wrong;
-		 * fall back to a conservative 64 MiB so we don't crash
-		 * the firmware itself. */
+		/* If even FLOOR fails the probe something is badly broken;
+		 * report a conservative 64 MiB so the firmware itself stays
+		 * up and the user can diagnose. */
 		if (addr < FLOOR)
 			dram_top = 0x04000000u;
 	}

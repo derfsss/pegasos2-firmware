@@ -65,19 +65,18 @@ extern uInt  g_amiga_part_block_size;
 #define ST_LINKDIR     (-5)     /* soft link -- not followed in M-min */
 
 /* --- Block size + field-offset arithmetic ---------------------- */
-/* Amiga FFS supports 512, 1024, 2048, 4096-byte FS blocks. Standard
- * small-disk partitions use 512; AOS4 FFS2 on larger disks (>= 1 GiB,
- * e.g. peg2-upd3 Update3 hd1) uses de_SectorPerBlock=2 yielding
- * 1024-byte blocks, where sec_type and other tail fields move with
- * BSIZE.
+/* Amiga FFS supports 512, 1024, 2048, 4096-byte FS blocks. Classic
+ * floppy + small-disk partitions use 512; AOS4 FFS2 on partitions
+ * >= 1 GiB sets de_SectorPerBlock=2 in the RDB envvec, yielding
+ * 1024-byte blocks where the trailer fields (sec_type, NaC, etc.)
+ * shift by an extra 512 bytes from their classic positions.
  *
  * MAX_BSIZE bounds the static rootbuf; runtime g_ffs.bsize tracks
  * the actual on-disk block size derived from the RDB envvec
- * (de_SizeBlock * 4 * de_SectorPerBlock), defaulted to 512 for
- * direct (non-RDB) FS_PROBE entry. All BSIZE-relative offsets used
- * to be #defined; they're now expressions in terms of g_ffs.bsize
- * because the same reader must serve both 512- and 1024-byte FFS2
- * partitions in the same build. */
+ * (de_SizeBlock * 4 * de_SectorPerBlock). Defaults to 512 for the
+ * direct (non-RDB-recursed) FS_PROBE entry path. All trailer-field
+ * offsets are now expressions in terms of g_ffs.bsize so the same
+ * reader serves both 512- and 1024-byte FFS partitions. */
 #define MAX_BSIZE      4096
 #define BSIZE_DEFAULT  512    /* fallback when no RDB hint available */
 
@@ -92,20 +91,14 @@ extern uInt  g_amiga_part_block_size;
 #define OFF_NAME           (g_ffs.bsize - 80)
 #define OFF_BYTE_SIZE      (g_ffs.bsize - 188)
 
-/* LNFS (DOS\6/\7) NaC merged name+comment area.
+/* LNFS (DOS\6/\7) Name-and-Comment area.
  *
- * LNFS replaces the classic 80-byte NAME (at BSIZE-80) and 79-byte
- * COMMENT (at BSIZE-184) fields with a single Name-and-Comment area
- * starting at the COMMENT offset (BSIZE-184) and growing forward.
- * The first BSTR in the area is the file's name; the second is the
- * comment. Per Olaf Barthel's LNFS writeup on the AmigaOS Doc Wiki.
- *
- * (Earlier this file used BSIZE-92, which is the NAME offset minus
- * 12 -- not the start of the NaC area. That offset happens to fall
- * past the end of any short filename for 512-byte blocks but lands
- * in pure-zero filler for 1024-byte FFS2 blocks, breaking name
- * lookups on AOS4.1FE Update3 disks where the NaC actually sits at
- * BSIZE-184 = 0x348.) */
+ * LNFS replaces the classic 80-byte NAME field (at BSIZE-80) and the
+ * 79-byte COMMENT field (at BSIZE-184) with a single NaC region that
+ * starts at the COMMENT offset and extends forward to BSIZE-80. The
+ * first BSTR in the region is the file's name; the second is the
+ * comment. Reference: Olaf Barthel's LNFS writeup on the AmigaOS
+ * Documentation Wiki. */
 #define OFF_LNFS_NAC       (g_ffs.bsize - 184)
 
 /* Hash table occupies [HT_OFFSET .. bsize-200). Entries scale with
@@ -113,18 +106,11 @@ extern uInt  g_amiga_part_block_size;
 #define HT_OFFSET          0x18
 #define HT_ENTRIES         ((g_ffs.bsize - HT_OFFSET - 200) / 4)
 
-/* File-header data_blocks[] is an array of LBA pointers stored
- * with index 0 (= the file's first data block) at the highest
- * offset DB_HIGH_OFF and growing downward toward HT_OFFSET (0x18).
- * Per Clevy's ADF FAQ the first entry sits at BSIZE-204; the
- * earlier value BSIZE-208 was wrong by one slot, so iteration
- * started at an always-zero word and exited before reading
- * anything (file_load reported success with byte_size populated
- * but the destination buffer never received the file contents,
- * which downstream SF then rejected with "bootimage format is of
- * an unknown format"). Verified against the on-disk amigaboot.of
- * header on hd1.raw: 61-entry array with first pointer at byte
- * 0x334 = BSIZE-204 for BSIZE=1024. */
+/* File-header data_blocks[] is an array of LBA pointers stored with
+ * index 0 (= the file's first data block) at the highest offset
+ * DB_HIGH_OFF and growing downward toward HT_OFFSET (0x18). The
+ * topmost slot sits at BSIZE-204, per Clevy's ADF FAQ. DB_MAX is
+ * the maximum entries that fit between HT_OFFSET and DB_HIGH_OFF. */
 #define DB_HIGH_OFF        (g_ffs.bsize - 204)
 #define DB_MAX             ((g_ffs.bsize - 228) / 4)
 
@@ -541,13 +527,11 @@ amiga_ffs(Environ *e, Filesys_action what, Instance *disk,
 	else
 		g_ffs.bsize = BSIZE_DEFAULT;
 
-	/* Override the caller-supplied scratch with our own MAX_BSIZE
-	 * buffer. SF's disklbl.c passes s->buf (= s->blocksize, 512
-	 * bytes for a 512-byte ATA disk); reading a 1024-byte FFS2
-	 * FS block into a 512-byte buffer overflows the heap behind
-	 * disklbl, manifesting as 'free: head/tail guard ... trashed'
-	 * the next time SF frees that block. Our own buffer is safe
-	 * for any block size up to MAX_BSIZE. */
+	/* The caller-supplied scratch is sized to the disk's logical
+	 * block (512 bytes for a 512-byte-sector ATA disk). Reading a
+	 * 1024-byte FFS2 block into it would overflow the heap allocation
+	 * behind disklbl. Use our own MAX_BSIZE-sized buffer for every
+	 * read in this reader instead. Single-threaded; static is safe. */
 	static uByte g_ffs_iobuf[MAX_BSIZE];
 	buf = g_ffs_iobuf;
 
@@ -568,22 +552,19 @@ amiga_ffs(Environ *e, Filesys_action what, Instance *disk,
 	if (dt > 7)
 		return E_NO_FILESYS;
 
-	/* Compute FFS root-block position. Real-AOS partitions follow
+	/* Compute FFS root-block position. AOS partitions follow
 	 *     root = (lowKey + highKey) / 2
 	 * where lowKey is the first non-reserved block (de_Reserved,
 	 * conventionally 2) and highKey is the last block of the
-	 * partition. amiga_rdb publishes partition byte size + block
-	 * size in g_amiga_part_*; if those are set, we have enough to
-	 * pin root exactly. Without them (whole-disk FS_PROBE direct),
-	 * we fall back to the legacy probe table.
+	 * partition. When amiga_rdb publishes partition byte size +
+	 * block size in g_amiga_part_* we have enough to pin root
+	 * exactly. Otherwise (whole-disk FS_PROBE entry, no RDB)
+	 * we fall back to a small probe table of likely positions.
 	 *
-	 * Rationale for not just probing: a probe table entry that
-	 * lands past end-of-disk produces an IDE READ_SECTOR that
-	 * QEMU returns ABRT/S_ERR for, and SmartFirmware's atadisk
-	 * surfaces that as "ATA device not present or not responding".
-	 * That message is misleading: the drive is there, but our
-	 * probe table walked off the end. Computing the exact root
-	 * avoids the issue entirely. */
+	 * The probe table is bounded by part_blocks_hint when we have
+	 * one, so a probe entry past partition end never issues an
+	 * out-of-range disk read (which on some controllers fails the
+	 * entire probe pass with a misleading "device not responding"). */
 	int found = 0;
 	uInt picked_root = 0;
 	uLong part_blocks_hint = 0;

@@ -339,13 +339,11 @@ ci_dispatch_body(void *args)
 nextprop_done:
 	amigaboot_ihandle_track_open(a, rc);
 
-	/* Trace each unique service name once, plus all calls until
-	 * we have seen N distinct services. After that, only print
-	 * 'unusual' return codes (errors). Keeps the log compact while
-	 * still showing the ABI shape amigaboot.of expects. */
+	/* Print this call iff it's the first occurrence of its service
+	 * name, OR returned a non-zero rc (an error worth seeing), OR
+	 * we're still in the first 5000 calls (during which the trace
+	 * shows the full ABI shape; later calls are mostly stdin polls). */
 	int is_error = (rc != 0);
-	/* Verbose trace -- print everything until we have a clearer
-	 * picture of what amigaboot is actually doing. */
 	int print_it = !seen || is_error || (call_n <= 5000);
 	if (print_it) {
 		cprintf(g_e, "[ci#%d] %s nargs=%d nrets=%d",

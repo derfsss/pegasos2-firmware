@@ -55,22 +55,17 @@
  *
  * Set by amiga_rdb before recursing into file_system() on a partition
  * slice; read by amiga_ffs/amiga_sfs/amiga_pfs3 when they need to
- * compute root-block / extent-tree positions that depend on partition
- * size (FFS root = (lowKey+highKey)/2, etc.).
+ * compute root-block or extent-tree positions that depend on the
+ * partition size and FS-block size (e.g. FFS root sits at
+ * (lowKey + highKey) / 2 in FS-block units).
  *
- * Without this, FFS's probe loop guessed at root-block positions and
- * could read past end-of-disk on partitions whose actual root was at
- * an offset not in the probe table -- triggering an IDE READ_SECTOR
- * (0x20) past LBA EOD, which QEMU returns with ABRT/S_ERR and
- * SmartFirmware's atadisk reports as "ATA device not present or not
- * responding".
- *
- * Cleared on amiga_rdb entry to avoid stale values bleeding into a
- * direct (non-RDB-recursed) FS_PROBE call. Single-threaded, single
- * outstanding boot, so a global is safe.
+ * Cleared on amiga_rdb entry to prevent a stale value from a previous
+ * partition bleeding into a direct (non-RDB-recursed) FS_PROBE call.
+ * Single-threaded firmware with one outstanding boot makes a global
+ * safe.
  */
 uLong g_amiga_part_byte_size;
-uInt  g_amiga_part_block_size;   /* DE_SIZEBLOCK longs * 4 */
+uInt  g_amiga_part_block_size;   /* de_SizeBlock * 4 * de_SectorPerBlock */
 
 /* --- On-disk magic numbers (public Amiga DOS format) ------------ */
 #define RDB_MAGIC_RDSK    0x5244534Bu   /* 'RDSK' */
@@ -394,16 +389,12 @@ amiga_rdb(Environ *e, Filesys_action what, Instance *disk,
 				 *
 				 * AOS FS-block size = de_SizeBlock (longs
 				 * per device-block) * 4 * de_SectorPerBlock
-				 * (device-blocks per FS-block). For a
-				 * standard small-disk partition this is
-				 * 128 * 4 * 1 = 512 bytes. AOS4 FFS2 on
-				 * large disks (>=1 GiB, like peg2-upd3
-				 * Update3) uses de_SectorPerBlock=2,
-				 * yielding 1024-byte FS blocks. The FFS
-				 * reader needs the actual on-disk block
-				 * size to walk the root-block layout
-				 * (sec_type at bsize-4, hash table sized
-				 * to (bsize-224)/4 entries, etc.). */
+				 * (device-blocks per FS-block). Classic
+				 * small-disk partitions use 128*4*1=512;
+				 * AOS4 FFS2 on >= 1 GiB disks sets
+				 * de_SectorPerBlock=2 for 1024-byte FS
+				 * blocks, where sec_type and hash-table
+				 * sizing shift accordingly. */
 				{
 				  uInt sz_block_longs = be32(buf +
 				    PART_OFF_ENVIRONMENT + DE_SIZEBLOCK * 4);
