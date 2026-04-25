@@ -152,25 +152,43 @@ struct nvram_data g_nvram[] = {
 	 */
 	{ "boot-device",          "cd"             },
 	{ "boot-file",            "/test.elf;1"    },
+	/*
+	 * boot-command runs as Forth at auto-boot expiry (or via ENTER
+	 * during the countdown). `smart-boot` is our priority-aware
+	 * dispatcher: it walks every disk's RDB partition packages,
+	 * classifies each by DosType (AmigaOS family / Linux / MorphOS),
+	 * and dispatches to the appropriate per-OS loader following the
+	 * `boot-os-priority` NVRAM var.
+	 *
+	 * For AmigaOS-family partitions (DOS\*, SFS\*, PFS\*, AFS\*) the
+	 * loader is amigaboot.of itself, which has its own boot-priority
+	 * sort + selection menu (de_BootPri in pb_Environment), so we
+	 * can hand off without specifying which DH#: -- amigaboot picks.
+	 */
+	{ "boot-command",         "smart-boot"     },
+	/*
+	 * boot-os-priority: comma-separated list of OS families to try
+	 * in order. First family with a candidate partition (DosType
+	 * match + BootPri >= 0) wins. Names: amigaos, linux, morphos.
+	 * Empty/missing -> firmware default "amigaos,morphos,linux".
+	 */
+	{ "boot-os-priority",     "amigaos,morphos,linux" },
 #if defined(PEGASOS_TARGET_HW)
 	/*
-	 * Real-hardware defaults: boot-command points at AOS4 but
-	 * auto-boot? is OFF so the user can edit the command via
-	 * `setenv boot-command ...` and `setenv auto-boot? true`.
-	 * Both are persisted to the M48T59 system partition.
+	 * Real-hardware defaults: auto-boot? is OFF so the user can
+	 * edit boot-command / boot-os-priority interactively via
+	 * `setenv` before turning auto-boot on. Both are persisted
+	 * to the M48T59 system partition.
 	 */
-	{ "boot-command",         "boot hd:0 amigaboot.of bootdevice=DH0" },
 	{ "auto-boot?",           "false"          },
 	{ "auto-boot-timeout",    "5000"           },
 #elif defined(PEGASOS_TARGET_QEMU)
 	/*
-	 * QEMU defaults: auto-boot enabled with a 3-second window
-	 * targeted at the standard AOS4 boot command. Headless test
-	 * runs (no disk attached) still reach the ok prompt because
-	 * SF's f_disklbl_load returns E_NO_DEVICE which short-circuits
-	 * back to the prompt without aborting auto-boot.
+	 * QEMU defaults: auto-boot enabled with a 3-second window.
+	 * Headless test runs (no disk attached) still reach the ok
+	 * prompt because smart-boot returns gracefully when no disk
+	 * has any candidate partition.
 	 */
-	{ "boot-command",         "boot hd:0 amigaboot.of bootdevice=DH0" },
 	{ "auto-boot?",           "true"           },
 	{ "auto-boot-timeout",    "3000"           },
 #else
@@ -539,6 +557,7 @@ extern Retcode f_test_ide_probe(Environ *e);
 extern Retcode f_test_read_block(Environ *e);
 extern Retcode f_test_iso_ls(Environ *e);
 extern Retcode f_test_aliases(Environ *e);
+extern Retcode f_smart_boot(Environ *e);   /* partition_pkg.c */
 
 /*
  * get-time-of-day ( -- second minute hour day month year )
@@ -693,6 +712,8 @@ static const Initentry init_pegasos2[] = {
 			"( -- sec min hr day mo yr)  read M48T59 RTC (fallback 1970-01-01)") },
 	{ (Byte *)"set-time-of-day", f_set_time_of_day, INVALID_FCODE, F_NONE, T_FUNC HELP(
 			"(sec min hr day mo yr --)  write M48T59 RTC (noop if absent)") },
+	{ (Byte *)"smart-boot", f_smart_boot, INVALID_FCODE, F_NONE, T_FUNC HELP(
+			"(--)  walk RDB partitions; pick by `boot-os-priority` (amigaos,linux,morphos); dispatch to per-OS loader") },
 	{ NULL, NULL, INVALID_FCODE, F_NONE, T_FUNC HELP("") }
 };
 

@@ -63,6 +63,8 @@
 #define DE_BLOCKSPERTRACK       5
 #define DE_LOWCYL               9
 #define DE_HIGHCYL              10
+#define DE_BOOTPRI              15      /* signed; -128 = "do not boot" */
+#define DE_DOSTYPE              16      /* 4-char filesystem identifier */
 
 extern Package *find_ide_controller(Environ *e);
 
@@ -455,6 +457,27 @@ add_partitions_for_disk(Environ *e, Package *disk_pkg)
 			name, CSTR);
 		prop_set_int(p->props, (Byte *)"reg", CSTR,
 			(Cell)part_idx);
+		/*
+		 * Expose RDB DosType + BootPri as device-tree properties
+		 * for smart-boot's OS-priority dispatch. dostype is a 4-byte
+		 * binary blob (e.g. 'DOS\7', 'SFS\0', 'EXT2'); boot-priority
+		 * is a signed Int (-128 = "never auto-boot").
+		 */
+		uInt dostype = be32(env + DE_DOSTYPE * 4);
+		Int  bootpri = (Int)be32(env + DE_BOOTPRI * 4);
+		/* set_property allocates+memcpy's the bytes (unlike
+		 * add_property which only stashes the pointer -- a stack
+		 * temporary would be reused after the install function
+		 * returned and any later read would see garbage). */
+		uByte dostype_be[4];
+		dostype_be[0] = (uByte)(dostype >> 24);
+		dostype_be[1] = (uByte)(dostype >> 16);
+		dostype_be[2] = (uByte)(dostype >> 8);
+		dostype_be[3] = (uByte)(dostype);
+		set_property(p->props, (Byte *)"dostype", CSTR,
+			(Byte *)dostype_be, 4);
+		prop_set_int(p->props, (Byte *)"boot-priority", CSTR,
+			(Cell)bootpri);
 
 		PartitionSelf *ps =
 			(PartitionSelf *)malloc(sizeof *ps);
@@ -488,8 +511,9 @@ close_and_return:
 	return r;
 }
 
-/* Locate the first non-ATAPI HD child under the IDE controller. */
-static Package *
+/* Locate the first non-ATAPI HD child under the IDE controller.
+ * Non-static so smart-boot below can re-walk after partition install. */
+Package *
 find_first_hd_disk(Environ *e)
 {
 	Package *ide = find_ide_controller(e);
@@ -516,4 +540,213 @@ CC(install_partition_packages)
 	if (r != NO_ERROR && r != E_NO_FILESYS)
 		cprintf(e, "  (RDB scan: %s)\n", err2str(r));
 	return NO_ERROR;
+}
+
+/* --- smart-boot: priority-based OS dispatcher --------------------- */
+
+/*
+ * Map a 4-byte DosType to an OS family. Lower-case strings here are
+ * the same names accepted in the `boot-os-priority` NVRAM list.
+ *
+ * Coverage:
+ *   "DOS\\0".."DOS\\7" -> amigaos    (OFS, FFS, Intl, DC, LNFS / FFS2)
+ *   "SFS\\0".."SFS\\2" -> amigaos    (SmartFileSystem, AOS-side)
+ *   "PFS\\1".."PFS\\3" -> amigaos    (Professional FileSystem 3)
+ *   "AFS\\1"           -> amigaos    (alias for PFS, AOS-side)
+ *   "MOR\\?"           -> morphos    (MorphOS-format partitions)
+ *   "LNX\\?"/"EXT2/3/4"-> linux      (Linux-on-Amiga partitions)
+ *   anything else      -> "" (unknown; not a smart-boot candidate)
+ */
+static const char *
+classify_dostype(uInt dostype)
+{
+	uInt high3 = dostype & 0xFFFFFF00u;
+	if (high3 == 0x444F5300u) return "amigaos"; /* DOS\* */
+	if (high3 == 0x53465300u) return "amigaos"; /* SFS\* */
+	if (high3 == 0x50465300u) return "amigaos"; /* PFS\* */
+	if (high3 == 0x41465300u) return "amigaos"; /* AFS\* */
+	if (high3 == 0x4D4F5200u) return "morphos"; /* MOR\* */
+	if (high3 == 0x4C4E5800u) return "linux";   /* LNX\* */
+	if (dostype == 0x45585432u ||                /* "EXT2" */
+	    dostype == 0x45585433u ||                /* "EXT3" */
+	    dostype == 0x45585434u)                  /* "EXT4" */
+		return "linux";
+	return "";
+}
+
+/* Token compare helper: returns 1 if [s..s+slen) equals [t..t+tlen) and
+ * also accepts a few aliases ("amigaos4"/"amigaos3" -> "amigaos"). */
+static int
+os_family_match(const Byte *s, int slen, const char *family)
+{
+	int flen = (int)strlen(family);
+	if (slen == flen && memcmp(s, family, slen) == 0)
+		return 1;
+	/* aliases */
+	if (strcmp(family, "amigaos") == 0) {
+		if (slen == 8 && memcmp(s, "amigaos4", 8) == 0) return 1;
+		if (slen == 8 && memcmp(s, "amigaos3", 8) == 0) return 1;
+		if (slen == 5 && memcmp(s, "amiga", 5) == 0)    return 1;
+	}
+	return 0;
+}
+
+/*
+ * For one OS family, scan all partition children of `hd` and return
+ * the highest-BootPri candidate, or NULL if none qualify. -128 in the
+ * BootPri field is the AOS "do not auto-boot this partition" sentinel
+ * (per RDB spec); we treat any negative value as opt-out so users can
+ * tag a non-bootable Linux data partition with -1 and not have
+ * smart-boot pick it.
+ */
+static Package *
+pick_partition_for_family(Package *hd, const char *family)
+{
+	Package *best = NULL;
+	Int      best_pri = -129;
+
+	for (Package *p = hd->children; p != NULL; p = p->link) {
+		Entry *de = find_table(p->props, (Byte *)"dostype", CSTR);
+		if (de == NULL || de->len < 4) continue;
+		const uByte *db = (const uByte *)de->v.array;
+		uInt dt = ((uInt)db[0] << 24) | ((uInt)db[1] << 16) |
+		          ((uInt)db[2] << 8)  |  (uInt)db[3];
+
+		const char *fam = classify_dostype(dt);
+		if (fam[0] == 0 || strcmp(fam, family) != 0) continue;
+
+		Entry *be_ = find_table(p->props, (Byte *)"boot-priority", CSTR);
+		Int pri = 0;
+		if (be_ != NULL && be_->len >= 4) {
+			const uByte *bb = (const uByte *)be_->v.array;
+			pri = (Int)(((uInt)bb[0] << 24) | ((uInt)bb[1] << 16) |
+			            ((uInt)bb[2] << 8)  |  (uInt)bb[3]);
+		}
+		if (pri < 0) continue;          /* opt-out */
+		if (pri > best_pri) {
+			best_pri = pri;
+			best = p;
+		}
+	}
+	return best;
+}
+
+/* Per-family loader. Each returns NO_ERROR if the loader was started
+ * (control will not return on success), or an error code on failure
+ * (smart-boot then continues to the next family in the priority list). */
+static Retcode
+loader_amigaos(Environ *e, Package *part)
+{
+	(void)part;
+	/* amigaboot.of does its own RDB walk + de_BootPri sort + menu;
+	 * we hand off without specifying which DH#: -- amigaboot picks
+	 * the highest-priority AOS-family partition automatically, and
+	 * displays a menu if multiple installs exist. */
+	const char *cmd = "boot hd:0 amigaboot.of";
+	return interp_text(e, (Byte *)cmd, strlen(cmd));
+}
+
+static Retcode
+loader_linux(Environ *e, Package *part)
+{
+	(void)part;
+	cprintf(e, "smart-boot: Linux loader not implemented yet "
+	        "(future: yaboot-style kernel + initrd from /boot)\n");
+	return E_UNSUPPORTED_FILESYS;
+}
+
+static Retcode
+loader_morphos(Environ *e, Package *part)
+{
+	(void)part;
+	cprintf(e, "smart-boot: MorphOS loader not implemented yet "
+	        "(future: load morphos.of / boot.img from disk root)\n");
+	return E_UNSUPPORTED_FILESYS;
+}
+
+/*
+ * Forth: smart-boot ( -- )
+ *
+ * Walk the user's `boot-os-priority` list in order. For each family,
+ * find a candidate partition (matching DosType + BootPri >= 0) and,
+ * if one exists, invoke the per-family loader. If the loader returns
+ * (only happens on failure -- successful boots transfer control out
+ * of the firmware), continue to the next family.
+ *
+ * If the entire priority list is exhausted with no successful loader,
+ * fall back to a plain `boot` so the user still sees SF's default
+ * load attempt against boot-device + boot-file.
+ */
+CC(f_smart_boot)
+{
+	/* Pull priority list. get_config returns the bare value bytes
+	 * (no length prefix); SF stores it as a NUL-terminated string. */
+	Byte *prio = get_config(e, (Byte *)"boot-os-priority", CSTR);
+	const char *fallback = "amigaos,morphos,linux";
+	if (prio == NULL || *prio == 0)
+		prio = (Byte *)fallback;
+
+	Package *hd = find_first_hd_disk(e);
+	if (hd == NULL) {
+		cprintf(e, "smart-boot: no HD; falling back to plain boot\n");
+		const char *cmd = "boot";
+		return interp_text(e, (Byte *)cmd, strlen(cmd));
+	}
+
+	/* Walk comma-separated priority list. Tokens are trimmed of
+	 * leading/trailing whitespace; case-sensitive. */
+	const Byte *cur = prio;
+	while (*cur) {
+		while (*cur == ' ' || *cur == '\t') cur++;
+		const Byte *tok_start = cur;
+		while (*cur && *cur != ',' && *cur != ' ' && *cur != '\t')
+			cur++;
+		int tok_len = (int)(cur - tok_start);
+		while (*cur == ' ' || *cur == '\t') cur++;
+		if (*cur == ',') cur++;
+
+		if (tok_len == 0) continue;
+
+		/* Map the token to one of the known families. */
+		const char *family;
+		if      (os_family_match(tok_start, tok_len, "amigaos"))
+			family = "amigaos";
+		else if (os_family_match(tok_start, tok_len, "linux"))
+			family = "linux";
+		else if (os_family_match(tok_start, tok_len, "morphos"))
+			family = "morphos";
+		else {
+			cprintf(e, "smart-boot: unknown family `%S` -- skipped\n",
+			        tok_start, (Int)tok_len);
+			continue;
+		}
+
+		Package *cand = pick_partition_for_family(hd, family);
+		if (cand == NULL) continue;
+
+		/* Print which partition we picked (helpful when multiple
+		 * families coexist). */
+		Byte *pname = NULL; Int pnlen = 0;
+		(void)prop_get_str(cand->props, (Byte *)"partition-name",
+			CSTR, &pname, &pnlen);
+		cprintf(e, "smart-boot: picking %s partition %S\n",
+		        family, pname ? pname : (Byte *)"?",
+		        pname ? pnlen : 1);
+
+		Retcode r;
+		if (strcmp(family, "amigaos") == 0)
+			r = loader_amigaos(e, cand);
+		else if (strcmp(family, "linux") == 0)
+			r = loader_linux(e, cand);
+		else
+			r = loader_morphos(e, cand);
+
+		if (r == NO_ERROR)
+			return NO_ERROR;     /* unreachable in success case */
+		/* loader failed -- try next family */
+	}
+
+	cprintf(e, "smart-boot: no priority match, falling back to plain `boot`\n");
+	const char *cmd = "boot";
+	return interp_text(e, (Byte *)cmd, strlen(cmd));
 }
