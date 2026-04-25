@@ -605,19 +605,43 @@ dprintf(const char *fmt, ...)
 }
 
 /*
- * u_sleep: micro-seconds. Implemented as a busy-spin with a
- * tick-granularity lower bound. Our decrementer fires on an interval
- * of ~TB_TICKS_PER_MS ticks, so sub-millisecond sleeps round up to
- * one tick. Good enough for driver settling delays; refine when a
- * microsecond-resolution time source exists.
+ * u_sleep: micro-seconds. Uses the Time Base (TB) for true
+ * sub-millisecond accuracy. _dec_reload is the number of TB ticks
+ * per millisecond (computed by timer_calibrate), so TB ticks per
+ * microsecond = _dec_reload / 1000. This avoids the previous 1 ms
+ * rounding-up that made every IDE register-write cost a full ms,
+ * turning a typical disk read from <100 us into 5+ ms per sector.
+ *
+ * If _dec_reload hasn't been computed yet (early boot, before
+ * timer_calibrate runs), fall back to spinning a fixed count
+ * proportional to the requested delay.
  */
+extern uInt _dec_reload;
+
 void
 u_sleep(uInt us)
 {
-	uInt ms = (us + 999u) / 1000u;
-	uInt start = _ms_tick_count;
-	while ((_ms_tick_count - start) < ms)
-		/* busy-spin */ ;
+	uInt tb_per_ms = _dec_reload;
+
+	if (tb_per_ms == 0u) {
+		/* timer not calibrated yet; cheap spin */
+		volatile uInt n = us * 100u;
+		while (n--)
+			;
+		return;
+	}
+
+	/* TB increments at tb_per_ms / 1 ms = tb_per_ms ticks/ms.
+	 * Per-microsecond ticks = tb_per_ms / 1000. We want to wait
+	 * at LEAST `us` microseconds = us * tb_per_ms / 1000 ticks. */
+	uInt wait_ticks = ((uInt)us * tb_per_ms + 999u) / 1000u;
+
+	uInt start;
+	__asm__ volatile ("mftb %0" : "=r"(start));
+	uInt now;
+	do {
+		__asm__ volatile ("mftb %0" : "=r"(now));
+	} while ((now - start) < wait_ticks);
 }
 
 /*

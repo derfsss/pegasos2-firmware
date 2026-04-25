@@ -678,6 +678,28 @@ CC(install_pegasos2_ci_services)
 		                     * drop silently -- next call into the
 		                     * CI name dispatcher will hit the
 		                     * fallback linear scan */
+
+	/*
+	 * Pre-populate /options with the AOS4 kernel command line so
+	 * the kernel logs to serial. amigaboot.of reads this via
+	 * getprop "/options/os4_commandline" and forwards it to the
+	 * kernel boot args. "serial munge debuglevel=7" tells the
+	 * AmigaOS 4.1 kernel to mirror its kprintf output to UART1
+	 * with verbose level 7 -- otherwise the kernel runs silently
+	 * because it normally renders to a framebuffer that we don't
+	 * yet expose. Setting it as a /options property (rather than
+	 * via setenv from the OF prompt) avoids the SF "no such
+	 * configuration variable" gate that rejects unknown names.
+	 */
+	if (e->options != NULL && e->options->props != NULL) {
+		/* "serial debuglevel=1" matches the working AmigaQemuTests
+		 * append config; the AOS4 kernel parses this from
+		 * /options/os4_commandline and routes kprintf to UART1. */
+		(void)prop_set_str(e->options->props,
+		             (Byte *)"os4_commandline", CSTR,
+		             (Byte *)"serial debuglevel=1", CSTR);
+	}
+
 	return init_entries(e, e->client->dict, init_pegasos2_ci);
 }
 
@@ -795,6 +817,7 @@ EC(install_deblocker);
 EC(install_disklabel);
 EC(install_ide_driver);
 EC(install_aliases);
+EC(install_partition_packages);
 EC(install_client_services);
 EC(install_pegasos2_ci_services);
 
@@ -836,6 +859,7 @@ const Command install_list[] = {
 	install_disklabel,
 	install_ide_driver,
 	install_aliases,
+	/* install_partition_packages, */  /* TEMP: isolate nextprop crash */
 	install_client_services,
 	install_pegasos2_ci_services,
 	NULL

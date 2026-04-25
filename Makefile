@@ -154,7 +154,8 @@ SF_CFLAGS := \
     -I$(SF_MACHDEP) \
     -I$(SF) \
     -I$(SF)/exe \
-    -U_FORTIFY_SOURCE
+    -U_FORTIFY_SOURCE \
+    $(EXTRA_CFLAGS)
 
 $(BUILD)/of_%.o: $(SF)/%.c | $(BUILD)
 	$(CC) $(SF_CFLAGS) -c $< -o $@
@@ -281,6 +282,7 @@ OF_MACHDEP_OBJS := \
     $(BUILD)/of_boot_kernel_asm.o \
     $(BUILD)/of_pci_tree.o \
     $(BUILD)/of_ide_driver.o \
+    $(BUILD)/of_partition_pkg.o \
     $(BUILD)/of_amiga_rdb.o \
     $(BUILD)/of_amiga_ffs.o \
     $(BUILD)/of_amiga_sfs.o \
@@ -303,6 +305,9 @@ $(BUILD)/of_pci_tree.o: $(SF_MACHDEP)/pci_tree.c | $(BUILD)
 	$(CC) $(SF_CFLAGS) -I$(MACHDEP) -c $< -o $@
 
 $(BUILD)/of_ide_driver.o: $(SF_MACHDEP)/ide_driver.c | $(BUILD)
+	$(CC) $(SF_CFLAGS) -I$(MACHDEP) -c $< -o $@
+
+$(BUILD)/of_partition_pkg.o: $(SF_MACHDEP)/partition_pkg.c | $(BUILD)
 	$(CC) $(SF_CFLAGS) -I$(MACHDEP) -c $< -o $@
 
 # Arc FS-B, Block 1: Amiga Rigid Disk Block partition parser.

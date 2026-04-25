@@ -242,7 +242,7 @@ static const Initentry ide_ctlr_methods[] = {
  * from pci.c, ~100 LOC; deferred until a milestone that needs
  * path-level PCI navigation from OS clients).
  */
-static Package *
+Package *
 find_ide_controller(Environ *e)
 {
 	Package *pci_bus =

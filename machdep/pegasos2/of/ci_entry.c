@@ -112,10 +112,96 @@ ci_seen_or_remember(const char *name)
 }
 #endif
 
-int
-ci_dispatch(void *args)
-{
+/* Track the most-recently-used valid ihandle from open() / non-zero
+ * call-method args, for the amigaboot.of NULL-ihandle workaround. */
+static uInt g_last_ihandle;
 
+/* amigaboot.of's "scan block devices" pass calls call-method
+ * "block-size" with a valid ihandle, immediately followed by call-
+ * method "#blocks" with ihandle=NULL. Disassembly suggests amigaboot
+ * stores the ihandle in a register that gets clobbered by the first
+ * call-method's return value (the compiled code does not spill it
+ * across the call). On real Pegasos2 firmware the same code works
+ * because real SF's call-method falls back to e->currinst (the most
+ * recently active instance) when given ihandle=NULL. Replicate that
+ * by substituting g_last_ihandle for any NULL ihandle we see in a
+ * call-method or read/write/seek service.
+ */
+static void
+amigaboot_ihandle_fixup_in(Cell *a)
+{
+	uInt svc_ptr = (uInt)a[0];
+	uInt nargs   = (uInt)a[1];
+	if (svc_ptr == 0)
+		return;
+	const char *name = (const char *)(uPtr)svc_ptr;
+
+	int is_callm = (name[0] == 'c' && name[1] == 'a' &&
+	                name[2] == 'l' && name[3] == 'l' &&
+	                name[4] == '-' && name[5] == 'm');
+	int is_io    = ((name[0] == 'r' && name[1] == 'e' &&
+	                 name[2] == 'a' && name[3] == 'd' &&
+	                 name[4] == '\0') ||
+	                (name[0] == 'w' && name[1] == 'r' &&
+	                 name[2] == 'i' && name[3] == 't' &&
+	                 name[4] == 'e' && name[5] == '\0') ||
+	                (name[0] == 's' && name[1] == 'e' &&
+	                 name[2] == 'e' && name[3] == 'k' &&
+	                 name[4] == '\0'));
+
+	if (is_callm && nargs >= 2) {
+		/* For call-method, regardless of how many method-args
+		 * follow, the input layout is always:
+		 *   a[3]=method-name, a[4]=ihandle, a[5..]=method-args.
+		 * SF's f_client_call_method pops method (TOP) then
+		 * ihandle (NEXT), so ihandle is at a[4] not a[3+nargs-1].
+		 */
+		uInt ih = (uInt)a[4];
+		if (ih == 0 && g_last_ihandle != 0)
+			a[4] = (Cell)g_last_ihandle;
+		else if (ih != 0)
+			g_last_ihandle = ih;
+	} else if (is_io && nargs >= 1) {
+		/* read/write/seek services take ihandle as their LAST
+		 * input (TOP of Forth stack), so ihandle is at the
+		 * highest array slot for these. Per SF's do_method:
+		 *   read/write: (addr len ihandle) -> POP order is
+		 *               inst (TOP), addr, len -> ihandle = a[3]
+		 *   seek      : (pos.lo pos.hi ihandle) -> ihandle = a[3]
+		 * So ihandle is the FIRST slot (a[3]), regardless of
+		 * nargs.
+		 */
+		uInt ih = (uInt)a[3];
+		if (ih == 0 && g_last_ihandle != 0)
+			a[3] = (Cell)g_last_ihandle;
+		else if (ih != 0)
+			g_last_ihandle = ih;
+	}
+}
+
+static void
+amigaboot_ihandle_track_open(Cell *a, int rc)
+{
+	uInt svc_ptr = (uInt)a[0];
+	uInt nargs   = (uInt)a[1];
+	uInt nrets   = (uInt)a[2];
+	if (rc != 0 || svc_ptr == 0 || nrets < 1)
+		return;
+	const char *name = (const char *)(uPtr)svc_ptr;
+	if (name[0] == 'o' && name[1] == 'p' &&
+	    name[2] == 'e' && name[3] == 'n') {
+		uInt ih = (uInt)a[3 + nargs];
+		if (ih != 0)
+			g_last_ihandle = ih;
+	}
+}
+
+/* Body of CI dispatch -- separated so the outer ci_dispatch can
+ * wrap it in MSR[EE] enable/restore without complicating the body's
+ * many return paths. */
+static int
+ci_dispatch_body(void *args)
+{
 #ifdef CI_TRACE
 	Cell *a = (Cell *)args;
 	uInt svc_ptr = (uInt)a[0];
@@ -191,18 +277,97 @@ ci_dispatch(void *args)
 	int seen = ci_seen_or_remember(name);
 	int call_n = ++g_ci_trace_counter;
 
-	int rc = (int)client_interface((Cell *)args);
+	amigaboot_ihandle_fixup_in(a);
 
-	/* Print on: first occurrence, every N-th call for very
-	 * common services, or any negative rc (= error). */
+	/* Workaround for SF f_client_nextprop bug: when prev-cstr names
+	 * the LAST property on a node, SF takes a code path with an
+	 * unguarded NULL deref that GCC compiles into an unconditional
+	 * trap. Intercept "nextprop" service and handle it ourselves
+	 * with the spec-compliant return:
+	 *   - prev-cstr == NULL or "":   return first property
+	 *   - prev-cstr matches an entry: return the next one (link)
+	 *     -> if there's no next, return -1 (no more)
+	 *   - prev-cstr doesn't match:    return -1 (per IEEE 1275)
+	 * Spec: nextprop(buf-addr, prev-cstr, phandle -- size). Array
+	 * layout: a[3]=phandle, a[4]=prev-cstr, a[5]=buf, a[6]=size.
+	 */
+	int rc;
+	if (name[0] == 'n' && name[1] == 'e' && name[2] == 'x' &&
+	    name[3] == 't' && name[4] == 'p' && name[5] == 'r' &&
+	    nargs == 3 && nrets == 1) {
+		Package *pkg = (Package *)(uPtr)(uInt)a[3];
+		const Byte *prev = (const Byte *)(uPtr)(uInt)a[4];
+		Byte *buf = (Byte *)(uPtr)(uInt)a[5];
+		Entry *ent;
+
+		if (pkg == NULL || pkg->props == NULL) {
+			pkg = g_e->root;
+		}
+		if (pkg == NULL || pkg->props == NULL) {
+			a[3 + nargs] = (Cell)-1;
+			rc = 0;
+			goto nextprop_done;
+		}
+
+		if (prev == NULL || *prev == 0) {
+			ent = pkg->props->list;
+		} else {
+			ent = find_table(pkg->props, (Byte *)prev, CSTR);
+			if (ent != NULL)
+				ent = ent->link;
+		}
+
+		if (ent == NULL || ent->name == NULL) {
+			a[3 + nargs] = (Cell)-1;   /* no more props */
+			rc = 0;
+			goto nextprop_done;
+		}
+
+		int len = (int)(uByte)ent->name[0];
+		if (len > 31) len = 31;
+		if (buf != NULL) {
+			for (int i = 0; i < len; i++)
+				buf[i] = ent->name[1 + i];
+			buf[len] = 0;
+		}
+		a[3 + nargs] = (Cell)(uInt)len;
+		rc = 0;
+		goto nextprop_done;
+	}
+
+	rc = (int)client_interface((Cell *)args);
+nextprop_done:
+	amigaboot_ihandle_track_open(a, rc);
+
+	/* Trace each unique service name once, plus all calls until
+	 * we have seen N distinct services. After that, only print
+	 * 'unusual' return codes (errors). Keeps the log compact while
+	 * still showing the ABI shape amigaboot.of expects. */
 	int is_error = (rc != 0);
-	int print_it = !seen || is_error || (call_n <= 30);
+	/* Verbose trace -- print everything until we have a clearer
+	 * picture of what amigaboot is actually doing. */
+	int print_it = !seen || is_error || (call_n <= 5000);
 	if (print_it) {
 		cprintf(g_e, "[ci#%d] %s nargs=%d nrets=%d",
 		        call_n, name, (int)nargs, (int)nrets);
-		for (uInt i = 0; i < nargs && i < 6; i++)
-			cprintf(g_e, " a%d=0x%X", (int)i,
-				(unsigned)a[3 + i]);
+		for (uInt i = 0; i < nargs && i < 6; i++) {
+			uInt v = (uInt)a[3 + i];
+			cprintf(g_e, " a%d=0x%X", (int)i, (unsigned)v);
+			/* If arg looks like a pointer into amigaboot's
+			 * text/data (0x00200000..0x00400000), try to
+			 * print as a NUL-terminated ASCII string. */
+			if (v >= 0x00200000u && v < 0x00400000u) {
+				const uByte *p = (const uByte *)(uPtr)v;
+				char strbuf[32];
+				int j = 0;
+				while (j < (int)sizeof(strbuf) - 1 &&
+				       p[j] >= 0x20 && p[j] < 0x7Fu)
+					strbuf[j] = p[j], j++;
+				strbuf[j] = 0;
+				if (j >= 1)
+					cprintf(g_e, "(\"%s\")", strbuf);
+			}
+		}
 		cprintf(g_e, " -> rc=%d", rc);
 		for (uInt i = 0; i < nrets && i < 6; i++)
 			cprintf(g_e, " r%d=0x%X", (int)i,
@@ -211,8 +376,96 @@ ci_dispatch(void *args)
 	}
 	return rc;
 #else
-	return (int)client_interface((Cell *)args);
+	{
+		Cell *a = (Cell *)args;
+		uInt svc_ptr = (uInt)a[0];
+		uInt nargs   = (uInt)a[1];
+		uInt nrets   = (uInt)a[2];
+		const char *sname = (svc_ptr != 0)
+			? (const char *)(uPtr)svc_ptr
+			: "";
+
+		amigaboot_ihandle_fixup_in(a);
+
+		/* Same nextprop bug-fix as the CI_TRACE_LIMITED branch. */
+		if (sname[0] == 'n' && sname[1] == 'e' &&
+		    sname[2] == 'x' && sname[3] == 't' &&
+		    sname[4] == 'p' && sname[5] == 'r' &&
+		    nargs == 3 && nrets == 1) {
+			Package *pkg = (Package *)(uPtr)(uInt)a[3];
+			const Byte *prev = (const Byte *)(uPtr)(uInt)a[4];
+			Byte *buf = (Byte *)(uPtr)(uInt)a[5];
+			Entry *ent;
+
+			if (pkg == NULL || pkg->props == NULL)
+				pkg = g_e->root;
+			if (pkg == NULL || pkg->props == NULL) {
+				a[3 + nargs] = (Cell)-1;
+				amigaboot_ihandle_track_open(a, 0);
+				return 0;
+			}
+			if (prev == NULL || *prev == 0) {
+				ent = pkg->props->list;
+			} else {
+				ent = find_table(pkg->props,
+				                 (Byte *)prev, CSTR);
+				if (ent != NULL)
+					ent = ent->link;
+			}
+			if (ent == NULL || ent->name == NULL) {
+				a[3 + nargs] = (Cell)-1;
+				amigaboot_ihandle_track_open(a, 0);
+				return 0;
+			}
+			int len = (int)(uByte)ent->name[0];
+			if (len > 31) len = 31;
+			if (buf != NULL) {
+				for (int i = 0; i < len; i++)
+					buf[i] = ent->name[1 + i];
+				buf[len] = 0;
+			}
+			a[3 + nargs] = (Cell)(uInt)len;
+			amigaboot_ihandle_track_open(a, 0);
+			return 0;
+		}
+
+		int rc = (int)client_interface((Cell *)args);
+		amigaboot_ihandle_track_open(a, rc);
+		return rc;
+	}
 #endif
+}
+
+/* Wrapper around ci_dispatch_body that re-enables MSR[EE] for the
+ * duration of CI processing.
+ *
+ * The OS (amigaboot.of in particular) hands control back to firmware
+ * via the CI handler with MSR[EE]=0 (interrupts off). Our atadisk
+ * driver calls u_sleep(N) which busy-spins waiting for the
+ * decrementer-driven _ms_tick_count to advance; with EE cleared, the
+ * decrementer can never fire, so u_sleep hangs forever. Re-enable
+ * EE while we run, restore on the way out so we don't disturb
+ * OS-visible state. */
+int
+ci_dispatch(void *args)
+{
+	uInt saved_msr;
+	__asm__ volatile (
+		"mfmsr  %0\n\t"
+		"ori    11, %0, 0x8000\n\t"   /* set MSR[EE] */
+		"mtmsr  11\n\t"
+		"isync\n\t"
+		: "=r"(saved_msr) :: "r11", "memory"
+	);
+
+	int rc = ci_dispatch_body(args);
+
+	__asm__ volatile (
+		"mtmsr  %0\n\t"
+		"isync\n\t"
+		: : "r"(saved_msr) : "memory"
+	);
+	return rc;
 }
 
 /*
