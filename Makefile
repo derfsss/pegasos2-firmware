@@ -308,12 +308,16 @@ $(BUILD)/of_machdep.o: $(SF_MACHDEP)/machdep.c | $(BUILD)
 OF_MACHDEP_OBJS := \
     $(BUILD)/of_machdep.o \
     $(BUILD)/of_platform.o \
+    $(BUILD)/of_machine_hooks.o \
+    $(BUILD)/of_forth_diag.o \
+    $(BUILD)/of_rtc_word.o \
     $(BUILD)/of_ci_entry.o \
     $(BUILD)/of_boot_kernel.o \
     $(BUILD)/of_boot_kernel_asm.o \
     $(BUILD)/of_pci_tree.o \
     $(BUILD)/of_ide_driver.o \
     $(BUILD)/of_partition_pkg.o \
+    $(BUILD)/of_smart_boot.o \
     $(BUILD)/of_amiga_rdb.o \
     $(BUILD)/of_amiga_ffs.o \
     $(BUILD)/of_amiga_sfs.o \
@@ -322,6 +326,15 @@ OF_MACHDEP_OBJS := \
 
 $(BUILD)/of_platform.o: $(SF_MACHDEP)/platform.c | $(BUILD)
 	$(CC) $(SF_CFLAGS) -I$(MACHDEP) -I$(SF)/fs -c $< -o $@
+
+$(BUILD)/of_machine_hooks.o: $(SF_MACHDEP)/machine_hooks.c | $(BUILD)
+	$(CC) $(SF_CFLAGS) -I$(MACHDEP) -c $< -o $@
+
+$(BUILD)/of_forth_diag.o: $(SF_MACHDEP)/forth_diag.c | $(BUILD)
+	$(CC) $(SF_CFLAGS) -I$(MACHDEP) -c $< -o $@
+
+$(BUILD)/of_rtc_word.o: $(SF_MACHDEP)/rtc_word.c | $(BUILD)
+	$(CC) $(SF_CFLAGS) -I$(MACHDEP) -c $< -o $@
 
 $(BUILD)/of_ci_entry.o: $(SF_MACHDEP)/ci_entry.c | $(BUILD)
 	$(CC) $(SF_CFLAGS) -I$(MACHDEP) -c $< -o $@
@@ -339,6 +352,9 @@ $(BUILD)/of_ide_driver.o: $(SF_MACHDEP)/ide_driver.c | $(BUILD)
 	$(CC) $(SF_CFLAGS) -I$(MACHDEP) -c $< -o $@
 
 $(BUILD)/of_partition_pkg.o: $(SF_MACHDEP)/partition_pkg.c | $(BUILD)
+	$(CC) $(SF_CFLAGS) -I$(MACHDEP) -c $< -o $@
+
+$(BUILD)/of_smart_boot.o: $(SF_MACHDEP)/smart_boot.c | $(BUILD)
 	$(CC) $(SF_CFLAGS) -I$(MACHDEP) -c $< -o $@
 
 # Arc FS-B, Block 1: Amiga Rigid Disk Block partition parser.
