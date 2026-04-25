@@ -1,0 +1,66 @@
+Pegasos II Firmware — license summary
+======================================
+
+This project combines code under three closely related BSD-3-clause
+style licenses, each preserved verbatim in the LICENSES/ directory.
+All three permit redistribution + modification with attribution and
+require source availability for binary releases.
+
+Components and their licenses:
+
+1. New files under machdep/pegasos2/ (this project's clean-room
+   rewrite) and the project-level documentation:
+
+       Copyright (c) 2026 Pegasos2 clean-room rewrite contributors.
+       All rights reserved.
+
+   Released under the CodeGen SmartFirmware source license
+   (BSD-3-clause-style + source-availability clause). Full text:
+   LICENSES/CodeGen-smartfirmware.txt.
+
+2. Vendored upstream/smartfirmware/ tree (the SmartFirmware OF
+   runtime that this project sits atop):
+
+       Copyright (c) 1992-2005 CodeGen, Inc. All rights reserved.
+
+   Released under the same CodeGen license as (1).
+   Full text: LICENSES/CodeGen-smartfirmware.txt.
+   Source provenance: upstream/smartfirmware/COPYRIGHT.
+
+3. Vendored upstream/x86emu/ tree (the x86 real-mode emulator
+   used to execute PCI option ROMs):
+
+       Copyright (c) 1996-1999 SciTech Software, Inc.
+       Copyright (c) David Mosberger-Tang
+       Copyright (c) 1999 Egbert Eich
+       Copyright (c) Freescale Semiconductor, Inc. (Jason Jin)
+
+   Released under the SciTech x86 Realmode Emulator Library
+   license (BSD-3-clause-style). Full text:
+   LICENSES/SciTech-x86emu.txt.
+
+Full-text license files
+-----------------------
+
+For the complete text of each license, including the
+source-availability clause that applies to clauses (1) and (2),
+see:
+
+  LICENSES/CodeGen-smartfirmware.txt
+  LICENSES/SciTech-x86emu.txt
+
+Each source file in this tree carries a license header pointing at
+one of the above; vendored files retain their original headers
+verbatim.
+
+Binary-distribution obligation
+------------------------------
+
+Per clause 3 of the CodeGen license, binary releases of this
+firmware must be accompanied by either (a) the complete source
+code, or (b) a written offer to provide the source for no more
+than the cost of distribution plus a nominal fee. The source
+must be freely redistributable under reasonable conditions.
+
+This project's GitHub releases satisfy clause 3 by publishing
+the complete source tree alongside every binary asset.

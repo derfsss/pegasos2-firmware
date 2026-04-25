@@ -11,6 +11,38 @@ expansion cards. This rewrite is built fresh from public specs +
 the original SmartFirmware source license; it is not a binary patch
 of the stock ROM.
 
+## ⚠️  Important — what this release has actually been tested on
+
+**This is a v0.5 pre-release.** The firmware has been validated in
+exactly one configuration:
+
+- **QEMU `-M pegasos2`** (Windows host, qemu-system-ppc 10.2.2)
+- booting **AmigaOS 4.1 Final Edition Update 3**
+- from a **single IDE hard disk** (FFS2 RDB partition layout)
+
+That's it. **Anything outside this combination is unverified.** In
+particular:
+
+- **Real Pegasos II hardware: not yet flashed.** Do not write this
+  firmware to a board's flash chip unless you have recovery
+  hardware (a flash programmer + a known-good backup of the
+  original ROM) and you understand the risk of bricking the
+  board.
+- **MorphOS, Linux, AmigaOS 3.x: not yet bootable.** The
+  framework recognises their partition types and falls through
+  to a "loader not implemented" message; nothing will load.
+- **CD-ROM / USB / network / floppy boot: not implemented.**
+- **Multi-disk / slave-drive / secondary IDE channel: untested.**
+- **Other QEMU versions / host OSes: untested.** The build is
+  deterministic but the QEMU runtime path has only been
+  exercised on the version above.
+
+If you're a developer, hobbyist, or researcher comfortable
+with a bare-metal PowerPC boot environment, the codebase is
+ready to extend. If you're looking for a drop-in BIOS
+replacement for daily use on a Pegasos II machine, **wait for
+a v1.0 release that has been validated on real hardware.**
+
 ## Status
 
 | | works |
