@@ -427,6 +427,59 @@ the firmware side of the spec-07 boot handoff is proven.
    bytes per the previous session's analysis); disassembly of
    the device-discovery functions (around 0x205F20 and 0x208438
    per the prior session notes) is the next concrete step.
+
+11. **FFS2 reader: 1024-byte FS-blocks + correct LNFS NaC offset**
+    (this session, uncommitted). Smoke-tested against
+    `peg2-upd3 hd1.raw` (AOS4.1FE Update 3 install, FFS2 DOS\7
+    DH0). Three bugs found and fixed:
+    - amiga_ffs.c probed root-block at hardcoded list of likely
+      offsets (880, 1760, ..., 1048576, 2097152). On a 1 GiB
+      partition with root at 1047552, the next-tried offset
+      2097152 lands past end-of-disk; QEMU's IDE returns ABRT
+      and SF's atadisk surfaces this as "ATA device not present
+      or not responding" -- a misleading message that disguised
+      a probe-table walking off the disk. Fix: amiga_rdb now
+      publishes partition byte size + FS-block size via
+      `g_amiga_part_byte_size` + `g_amiga_part_block_size`
+      (extern globals, set per-partition before recursing into
+      file_system); amiga_ffs uses those to compute root via
+      the canonical `(lowKey + highKey) / 2` formula.
+    - amiga_ffs assumed 512-byte FS blocks. AOS4 FFS2 on >=1 GiB
+      partitions uses `de_SectorPerBlock=2` for 1024-byte blocks;
+      `de_SizeBlock * 4 * de_SectorPerBlock` is the canonical
+      formula. amiga_ffs.c parameterised: `g_ffs.bsize` runtime,
+      `MAX_BSIZE=4096` for static buffers, all `OFF_*` macros
+      now expressions in `g_ffs.bsize`. Heap overflow guard:
+      we override SF's caller-supplied 512-byte buf with our
+      own MAX_BSIZE buffer, since `disklbl.c` passes
+      `s->blocksize=512`.
+    - LNFS (DOS\6/\7) NaC offset was wrong: had `BSIZE-92`,
+      should be `BSIZE-184`. Per Olaf Barthel's LNFS writeup,
+      the Name-and-Comment area starts at the original COMMENT
+      offset (BSIZE-184) and extends forward to the original
+      NAME offset (BSIZE-80). With BSIZE=1024, the file's
+      filename BSTR sits at byte 0x348; with BSIZE-92=932 we
+      read from pure-zero filler and every name lookup
+      returned 0.
+
+    Verified end-to-end on hd1.raw: `boot hd:0 Kickstart/
+    Kicklayout` walks Kickstart dir hash table -> finds
+    Kicklayout (block 520333) -> reads file contents (sectors
+    1185516..1185521) -> SF rejects with "bootimage format is
+    of an unknown format" (correct -- Kicklayout is a config
+    file, not an ELF). 18 IDE reads, no errors.
+
+    hd0.qcow2 (SFS) regression-tested: still loads amigaboot.of
+    cleanly and reaches "AmigaOS 4.x OpenFirmware Bootloader
+    V53.21 / No bootable devices found" -- the previously-
+    paused state.
+
+    Note: hd1.raw does NOT contain `/amigaboot.of`. peg2-upd3
+    boots via `bboot -kernel` + `kickstart.zip -initrd`, not
+    the OF/amigaboot.of path. To boot AOS4 from hd1 with our
+    firmware, either copy amigaboot.of onto hd1's DH0:, or
+    teach the firmware to parse Kicklayout itself (the bboot
+    approach). The FS reader is now ready for either path.
    cache, M4 ISO9660 FS + fs/fs dispatcher, M5 /aliases + test-
    media generation, M6 machine_go → machine_jump_os integration
    + `boot cd /test.elf` end-to-end, M7 NVRAM defaults +

@@ -45,6 +45,14 @@
 #include "defs.h"
 #include "fs.h"
 
+/* Set by amiga_rdb before recursing into file_system on a partition.
+ * Lets us compute the FFS root block position exactly instead of
+ * probing a hardcoded list of likely offsets, which can read past
+ * end-of-disk on partitions whose actual root sits between two
+ * probe-table entries. See amiga_rdb.c for the full rationale. */
+extern uLong g_amiga_part_byte_size;
+extern uInt  g_amiga_part_block_size;
+
 /* --- Block-type identifiers ------------------------------------ */
 #define T_HEADER       2        /* root, userdir, file header, link */
 #define T_DATA         8        /* OFS data block header */
@@ -57,42 +65,68 @@
 #define ST_LINKDIR     (-5)     /* soft link -- not followed in M-min */
 
 /* --- Block size + field-offset arithmetic ---------------------- */
-/* Default Amiga FFS block size is 512 bytes. Partitions on HD can
- * use larger sizes (1024, 2048, 4096) but all fields reference
- * BSIZE symbolically so our code parameterises correctly. For this
- * reader we only handle 512-byte blocks; a future milestone can
- * parameterise if needed (multiply hash-table capacity, name offsets
- * and tail offsets by BSIZE/512). */
-#define BSIZE          512
+/* Amiga FFS supports 512, 1024, 2048, 4096-byte FS blocks. Standard
+ * small-disk partitions use 512; AOS4 FFS2 on larger disks (>= 1 GiB,
+ * e.g. peg2-upd3 Update3 hd1) uses de_SectorPerBlock=2 yielding
+ * 1024-byte blocks, where sec_type and other tail fields move with
+ * BSIZE.
+ *
+ * MAX_BSIZE bounds the static rootbuf; runtime g_ffs.bsize tracks
+ * the actual on-disk block size derived from the RDB envvec
+ * (de_SizeBlock * 4 * de_SectorPerBlock), defaulted to 512 for
+ * direct (non-RDB) FS_PROBE entry. All BSIZE-relative offsets used
+ * to be #defined; they're now expressions in terms of g_ffs.bsize
+ * because the same reader must serve both 512- and 1024-byte FFS2
+ * partitions in the same build. */
+#define MAX_BSIZE      4096
+#define BSIZE_DEFAULT  512    /* fallback when no RDB hint available */
 
-/* Header-block tail fields (measured DOWN from BSIZE) */
-#define OFF_SEC_TYPE   (BSIZE - 4)
-#define OFF_EXTENSION  (BSIZE - 8)
-#define OFF_PARENT     (BSIZE - 12)
-#define OFF_NEXT_HASH  (BSIZE - 16)
+/* Header-block tail fields (measured DOWN from g_ffs.bsize) */
+#define OFF_SEC_TYPE       (g_ffs.bsize - 4)
+#define OFF_EXTENSION      (g_ffs.bsize - 8)
+#define OFF_PARENT         (g_ffs.bsize - 12)
+#define OFF_NEXT_HASH      (g_ffs.bsize - 16)
 
 /* File-header tail fields */
-#define OFF_COMMENT    (BSIZE - 184)  /* comment BSTR starts here */
-#define OFF_NAME       (BSIZE - 80)   /* filename BSTR (DOS\0..\5) */
-#define OFF_BYTE_SIZE  (BSIZE - 188)  /* file size in bytes */
+#define OFF_COMMENT        (g_ffs.bsize - 184)
+#define OFF_NAME           (g_ffs.bsize - 80)
+#define OFF_BYTE_SIZE      (g_ffs.bsize - 188)
 
-/* LNFS (DOS\6/\7) moves name+comment into a merged 112-byte NaC[]
- * area starting at BSIZE-92 (replacing the fixed-split filename +
- * comment fields). The rest of the header is layout-compatible. */
-#define OFF_LNFS_NAC   (BSIZE - 92)   /* NaC[112] for merged name+cmt */
+/* LNFS (DOS\6/\7) NaC merged name+comment area.
+ *
+ * LNFS replaces the classic 80-byte NAME (at BSIZE-80) and 79-byte
+ * COMMENT (at BSIZE-184) fields with a single Name-and-Comment area
+ * starting at the COMMENT offset (BSIZE-184) and growing forward.
+ * The first BSTR in the area is the file's name; the second is the
+ * comment. Per Olaf Barthel's LNFS writeup on the AmigaOS Doc Wiki.
+ *
+ * (Earlier this file used BSIZE-92, which is the NAME offset minus
+ * 12 -- not the start of the NaC area. That offset happens to fall
+ * past the end of any short filename for 512-byte blocks but lands
+ * in pure-zero filler for 1024-byte FFS2 blocks, breaking name
+ * lookups on AOS4.1FE Update3 disks where the NaC actually sits at
+ * BSIZE-184 = 0x348.) */
+#define OFF_LNFS_NAC       (g_ffs.bsize - 184)
 
-/* Hash table occupies [0x18 .. BSIZE-200). Number of entries is
- * (BSIZE - 24 - 200) / 4 for a typical tail layout. For BSIZE=512
- * this is 72 longs, matching the HT_size field the volume stores. */
-#define HT_OFFSET      0x18
-#define HT_ENTRIES     ((BSIZE - HT_OFFSET - 200) / 4)  /* 72 for 512 */
+/* Hash table occupies [HT_OFFSET .. bsize-200). Entries scale with
+ * block size: 72 for BSIZE=512, 200 for BSIZE=1024, etc. */
+#define HT_OFFSET          0x18
+#define HT_ENTRIES         ((g_ffs.bsize - HT_OFFSET - 200) / 4)
 
-/* File header data_blocks[] grows downwards from just before the
- * file-size area (BSIZE-204) back toward the hash table area at
- * 0x18. Max entries per file header = (BSIZE - 228) / 4 = 71 for
- * BSIZE=512. */
-#define DB_HIGH_OFF    (BSIZE - 208)
-#define DB_MAX         ((BSIZE - 228) / 4)
+/* File-header data_blocks[] is an array of LBA pointers stored
+ * with index 0 (= the file's first data block) at the highest
+ * offset DB_HIGH_OFF and growing downward toward HT_OFFSET (0x18).
+ * Per Clevy's ADF FAQ the first entry sits at BSIZE-204; the
+ * earlier value BSIZE-208 was wrong by one slot, so iteration
+ * started at an always-zero word and exited before reading
+ * anything (file_load reported success with byte_size populated
+ * but the destination buffer never received the file contents,
+ * which downstream SF then rejected with "bootimage format is of
+ * an unknown format"). Verified against the on-disk amigaboot.of
+ * header on hd1.raw: 61-entry array with first pointer at byte
+ * 0x334 = BSIZE-204 for BSIZE=1024. */
+#define DB_HIGH_OFF        (g_ffs.bsize - 204)
+#define DB_MAX             ((g_ffs.bsize - 228) / 4)
 
 /* --- DosType bit decoding -------------------------------------- */
 /* Low byte of DosType, mask 0x07:
@@ -125,11 +159,12 @@ static struct {
 	Instance  *disk;
 	uLong      part_loc;   /* partition byte offset on disk */
 	uInt       part_size;  /* partition size in bytes (from RDB) */
+	uInt       bsize;      /* FS block size (512/1024/2048) */
 	uInt       dostype;    /* low byte, for FFS/OFS/Intl bits */
 	int        is_ffs;     /* FFS (no data-block header) vs OFS */
 	int        is_intl;    /* international case folding */
 	int        is_lnfs;    /* long-name variant (DOS\6/\7) */
-	uByte      rootbuf[BSIZE];
+	uByte      rootbuf[MAX_BSIZE];
 	uInt       root_block; /* block number of root block */
 } g_ffs;
 
@@ -143,27 +178,41 @@ be32(const uByte *p)
 
 /* --- Block I/O helper ------------------------------------------ */
 /* Read `block_num` (relative to the partition, 0-based in
- * BSIZE units) into buf. */
+ * `bsize` units) into buf. The bsize parameter avoids any reliance
+ * on g_ffs.bsize being valid -- callers thread the right size. */
+static Retcode
+read_block_sz(Environ *e, Instance *disk, uLong part_loc, uInt block_num,
+	      uInt bsize, uByte *buf)
+{
+	return filesys_read_bytes(e, disk,
+		part_loc + (uLong)block_num * bsize, bsize, buf);
+}
+
 static Retcode
 read_block(Environ *e, Instance *disk, uLong part_loc, uInt block_num,
 	   uByte *buf)
 {
-	return filesys_read_bytes(e, disk,
-		part_loc + (uLong)block_num * BSIZE, BSIZE, buf);
+	return read_block_sz(e, disk, part_loc, block_num, g_ffs.bsize, buf);
 }
 
 /* --- Checksum -------------------------------------------------- */
 /* Amiga FFS blocks (root, userdir, file header, extension) have
  * their 32-bit longwords sum to zero mod 2^32, treating the
  * stored checksum at offset 0x14 as part of the sum. Block passes
- * checksum iff sum(buf[0..BSIZE), 4-byte big-endian) == 0. */
+ * checksum iff sum(buf[0..bsize), 4-byte big-endian) == 0. */
+static int
+checksum_ok_sz(const uByte *buf, uInt bsize)
+{
+	uInt sum = 0;
+	for (uInt i = 0; i < bsize; i += 4)
+		sum += be32(buf + i);
+	return sum == 0 ? 1 : 0;
+}
+
 static int
 checksum_ok(const uByte *buf)
 {
-	uInt sum = 0;
-	for (uInt i = 0; i < BSIZE; i += 4)
-		sum += be32(buf + i);
-	return sum == 0 ? 1 : 0;
+	return checksum_ok_sz(buf, g_ffs.bsize);
 }
 
 /* --- Name case folding ----------------------------------------- */
@@ -242,7 +291,7 @@ open_volume(Environ *e, Instance *disk, uLong part_loc, uInt part_size,
 	 * approximate as part_size_blocks / 2, which matches the
 	 * typical FFS layout for RDB partitions and for floppies
 	 * (880 on a DD floppy). */
-	uInt part_blocks = part_size / BSIZE;
+	uInt part_blocks = part_size / g_ffs.bsize;
 	uInt root_block  = part_blocks / 2;
 
 	Retcode ret = read_block(e, disk, part_loc, root_block, buf);
@@ -281,7 +330,7 @@ open_volume(Environ *e, Instance *disk, uLong part_loc, uInt part_size,
 	}
 
 	g_ffs.root_block = root_block;
-	memcpy(g_ffs.rootbuf, buf, BSIZE);
+	memcpy(g_ffs.rootbuf, buf, g_ffs.bsize);
 	return NO_ERROR;
 }
 
@@ -328,13 +377,13 @@ walk_path(Environ *e, const Byte *path, uByte *scratch)
 	/* If path is empty, we want the root directory -- copy rootbuf
 	 * into scratch and return root_block. */
 	if (*path == '\0') {
-		memcpy(scratch, g_ffs.rootbuf, BSIZE);
+		memcpy(scratch, g_ffs.rootbuf, g_ffs.bsize);
 		return g_ffs.root_block;
 	}
 
 	/* Start hash lookup from root's hash table. */
-	uByte ht_buf[BSIZE];
-	memcpy(ht_buf, g_ffs.rootbuf, BSIZE);
+	uByte ht_buf[MAX_BSIZE];
+	memcpy(ht_buf, g_ffs.rootbuf, g_ffs.bsize);
 
 	const Byte *cur = path;
 	uInt current_block = g_ffs.root_block;
@@ -365,7 +414,7 @@ walk_path(Environ *e, const Byte *path, uByte *scratch)
 			/* More path to walk but not a dir. */
 			return 0;
 		}
-		memcpy(ht_buf, scratch, BSIZE);
+		memcpy(ht_buf, scratch, g_ffs.bsize);
 		cur = sep + 1;
 	}
 
@@ -394,7 +443,7 @@ read_file_contents(Environ *e, const uByte *hdr, uByte *out,
 			if (blkptr == 0)
 				goto done;
 
-			uByte dblk[BSIZE];
+			uByte dblk[MAX_BSIZE];
 			Retcode r = read_block(e, g_ffs.disk,
 				g_ffs.part_loc, blkptr, dblk);
 			if (r != NO_ERROR)
@@ -406,14 +455,14 @@ read_file_contents(Environ *e, const uByte *hdr, uByte *out,
 			uInt payload_len;
 			if (g_ffs.is_ffs) {
 				payload     = dblk;
-				payload_len = BSIZE;
+				payload_len = g_ffs.bsize;
 			} else {
 				if (be32(dblk + 0x00) != (uInt)T_DATA)
 					return E_READ_ERROR;
 				payload     = dblk + 0x18;  /* past header */
 				payload_len = be32(dblk + 0x0C); /* Data_size */
-				if (payload_len > BSIZE - 0x18)
-					payload_len = BSIZE - 0x18;
+				if (payload_len > g_ffs.bsize - 0x18)
+					payload_len = g_ffs.bsize - 0x18;
 			}
 
 			uLong remaining = to_read - written;
@@ -480,16 +529,34 @@ amiga_ffs(Environ *e, Filesys_action what, Instance *disk,
 	  uInt size, uByte *retbuf, uLong *val)
 {
 	(void)start_unused;
-	if (size < BSIZE) return E_BLOCKSIZE;
+	if (size < BSIZE_DEFAULT) return E_BLOCKSIZE;
 
-	/* Quick reject via boot-block DosType. For RDB-partitioned
-	 * disks, amiga_rdb recurses into file_system on each
-	 * partition slice; we only want to match partitions whose
-	 * boot block starts with 'DOS\N'. A partition formatted as
-	 * SFS or PFS would otherwise send our probe loop chasing
-	 * block offsets past the partition end, producing a torrent
-	 * of ATA timeout errors. */
-	uByte bootbuf[BSIZE];
+	/* Adopt the FS block size from the RDB hint when we have it;
+	 * fall back to the legacy 512-byte default for whole-disk
+	 * FS_PROBE entry. Must be set BEFORE any read_block call as
+	 * read_block reads g_ffs.bsize bytes per FS block. */
+	if (g_amiga_part_block_size >= BSIZE_DEFAULT &&
+	    g_amiga_part_block_size <= MAX_BSIZE)
+		g_ffs.bsize = g_amiga_part_block_size;
+	else
+		g_ffs.bsize = BSIZE_DEFAULT;
+
+	/* Override the caller-supplied scratch with our own MAX_BSIZE
+	 * buffer. SF's disklbl.c passes s->buf (= s->blocksize, 512
+	 * bytes for a 512-byte ATA disk); reading a 1024-byte FFS2
+	 * FS block into a 512-byte buffer overflows the heap behind
+	 * disklbl, manifesting as 'free: head/tail guard ... trashed'
+	 * the next time SF frees that block. Our own buffer is safe
+	 * for any block size up to MAX_BSIZE. */
+	static uByte g_ffs_iobuf[MAX_BSIZE];
+	buf = g_ffs_iobuf;
+
+	/* Quick reject via boot-block DosType. The DOS\N marker
+	 * lives in the first 4 bytes of partition byte 0 regardless
+	 * of FS block size, so a fixed 512-byte read is sufficient
+	 * to test it; we read with the actual bsize so I/O alignment
+	 * matches device expectations. */
+	uByte bootbuf[MAX_BSIZE];
 	uInt dt = 0;
 	Retcode r0 = read_block(e, disk, loc, 0, bootbuf);
 	if (r0 != NO_ERROR)
@@ -501,42 +568,84 @@ amiga_ffs(Environ *e, Filesys_action what, Instance *disk,
 	if (dt > 7)
 		return E_NO_FILESYS;
 
-	/* Probe likely root-block positions. 880 (DD floppy default)
-	 * first, then midpoints of larger partitions. Stop on the
-	 * first read failure so we don't chase offsets past the disk
-	 * end when the partition is small. */
-	static const uInt probe_mids[] = {
-		880,            /* DD floppy standard */
-		1760,           /* HD floppy */
-		4096,           /* small HD partition ~4 MiB */
-		16384,          /* 16 MiB */
-		65536,          /* 64 MiB */
-		262144,         /* 256 MiB */
-		1048576,        /* 1 GiB */
-		2097152,        /* 2 GiB */
-		0
-	};
-
+	/* Compute FFS root-block position. Real-AOS partitions follow
+	 *     root = (lowKey + highKey) / 2
+	 * where lowKey is the first non-reserved block (de_Reserved,
+	 * conventionally 2) and highKey is the last block of the
+	 * partition. amiga_rdb publishes partition byte size + block
+	 * size in g_amiga_part_*; if those are set, we have enough to
+	 * pin root exactly. Without them (whole-disk FS_PROBE direct),
+	 * we fall back to the legacy probe table.
+	 *
+	 * Rationale for not just probing: a probe table entry that
+	 * lands past end-of-disk produces an IDE READ_SECTOR that
+	 * QEMU returns ABRT/S_ERR for, and SmartFirmware's atadisk
+	 * surfaces that as "ATA device not present or not responding".
+	 * That message is misleading: the drive is there, but our
+	 * probe table walked off the end. Computing the exact root
+	 * avoids the issue entirely. */
 	int found = 0;
 	uInt picked_root = 0;
-	for (uInt i = 0; probe_mids[i] != 0; i++) {
-		Retcode r = read_block(e, disk, loc, probe_mids[i], buf);
-		if (r != NO_ERROR) break;    /* past disk end -- stop */
-		if (be32(buf + 0x00) != (uInt)T_HEADER) continue;
-		if ((Int)be32(buf + OFF_SEC_TYPE) != ST_ROOT) continue;
-		if (!checksum_ok(buf)) continue;
-		picked_root = probe_mids[i];
-		found = 1;
-		break;
+	uLong part_blocks_hint = 0;
+
+	if (g_amiga_part_byte_size && g_amiga_part_block_size) {
+		part_blocks_hint = g_amiga_part_byte_size /
+			g_amiga_part_block_size;
+		uInt low_key  = 2;
+		uInt high_key = (uInt)(part_blocks_hint - 1);
+		uInt root_calc = (low_key + high_key) / 2u;
+
+		Retcode r = read_block(e, disk, loc, root_calc, buf);
+		if (r == NO_ERROR &&
+		    be32(buf + 0x00) == (uInt)T_HEADER &&
+		    (Int)be32(buf + OFF_SEC_TYPE) == ST_ROOT &&
+		    checksum_ok(buf)) {
+			picked_root = root_calc;
+			found = 1;
+		}
+	}
+
+	if (!found) {
+		/* Fallback probe table for the whole-disk FS_PROBE case
+		 * where we don't have RDB-derived geometry. Skip entries
+		 * that would exceed the partition (when we have a hint)
+		 * to stay in-bounds. */
+		static const uInt probe_mids[] = {
+			880,            /* DD floppy standard */
+			1760,           /* HD floppy */
+			4096,           /* small HD partition ~4 MiB */
+			16384,          /* 16 MiB */
+			65536,          /* 64 MiB */
+			262144,         /* 256 MiB */
+			1048576,        /* 1 GiB */
+			2097152,        /* 2 GiB */
+			0
+		};
+		for (uInt i = 0; probe_mids[i] != 0; i++) {
+			if (part_blocks_hint &&
+			    (uLong)probe_mids[i] >= part_blocks_hint)
+				break;   /* would read past partition end */
+			Retcode r = read_block(e, disk, loc, probe_mids[i], buf);
+			if (r != NO_ERROR) break;    /* past disk end */
+			if (be32(buf + 0x00) != (uInt)T_HEADER) continue;
+			if ((Int)be32(buf + OFF_SEC_TYPE) != ST_ROOT) continue;
+			if (!checksum_ok(buf)) continue;
+			picked_root = probe_mids[i];
+			found = 1;
+			break;
+		}
 	}
 	if (!found)
 		return E_NO_FILESYS;
 
-	/* We don't know the partition size at this call site; use a
-	 * very generous default and rely on the root-block probe to
-	 * catch mismatches. For the size tracked in g_ffs.part_size,
-	 * use picked_root * 2 (roughly the partition end). */
-	uInt part_size_guess = picked_root * 2 * BSIZE;
+	/* Prefer the RDB-published partition size; fall back to the
+	 * picked-root-doubled estimate when we don't have the hint. */
+	uInt part_size_guess;
+	if (g_amiga_part_byte_size &&
+	    g_amiga_part_byte_size <= 0xFFFFFFFFul)
+		part_size_guess = (uInt)g_amiga_part_byte_size;
+	else
+		part_size_guess = picked_root * 2 * g_ffs.bsize;
 	if (open_volume(e, disk, loc, part_size_guess, buf, dt) != NO_ERROR) {
 		/* open_volume re-reads at the rootblock formula position,
 		 * which may differ from picked_root; fall back to using
@@ -551,7 +660,7 @@ amiga_ffs(Environ *e, Filesys_action what, Instance *disk,
 		g_ffs.is_lnfs    = (dt == 6 || dt == 7)    ? 1 : 0;
 		if (g_ffs.is_lnfs) g_ffs.is_intl = 1;
 		g_ffs.root_block = picked_root;
-		memcpy(g_ffs.rootbuf, buf, BSIZE);
+		memcpy(g_ffs.rootbuf, buf, g_ffs.bsize);
 	}
 
 	switch (what) {
@@ -561,7 +670,7 @@ amiga_ffs(Environ *e, Filesys_action what, Instance *disk,
 		return R_END;
 
 	case FS_LIST: {
-		uByte scratch[BSIZE];
+		uByte scratch[MAX_BSIZE];
 		/* Walk to the requested directory. Empty path =
 		 * root dir. */
 		uInt blk = walk_path(e, path, scratch);
@@ -584,7 +693,7 @@ amiga_ffs(Environ *e, Filesys_action what, Instance *disk,
 	}
 
 	case FS_LOAD: {
-		uByte scratch[BSIZE];
+		uByte scratch[MAX_BSIZE];
 		uInt blk = walk_path(e, path, scratch);
 		if (blk == 0)
 			return E_NO_FILE;

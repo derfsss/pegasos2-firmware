@@ -50,6 +50,28 @@
 #include "defs.h"
 #include "fs.h"
 
+/*
+ * Cross-FS partition geometry hint.
+ *
+ * Set by amiga_rdb before recursing into file_system() on a partition
+ * slice; read by amiga_ffs/amiga_sfs/amiga_pfs3 when they need to
+ * compute root-block / extent-tree positions that depend on partition
+ * size (FFS root = (lowKey+highKey)/2, etc.).
+ *
+ * Without this, FFS's probe loop guessed at root-block positions and
+ * could read past end-of-disk on partitions whose actual root was at
+ * an offset not in the probe table -- triggering an IDE READ_SECTOR
+ * (0x20) past LBA EOD, which QEMU returns with ABRT/S_ERR and
+ * SmartFirmware's atadisk reports as "ATA device not present or not
+ * responding".
+ *
+ * Cleared on amiga_rdb entry to avoid stale values bleeding into a
+ * direct (non-RDB-recursed) FS_PROBE call. Single-threaded, single
+ * outstanding boot, so a global is safe.
+ */
+uLong g_amiga_part_byte_size;
+uInt  g_amiga_part_block_size;   /* DE_SIZEBLOCK longs * 4 */
+
 /* --- On-disk magic numbers (public Amiga DOS format) ------------ */
 #define RDB_MAGIC_RDSK    0x5244534Bu   /* 'RDSK' */
 #define RDB_MAGIC_PART    0x50415254u   /* 'PART' */
@@ -241,6 +263,13 @@ amiga_rdb(Environ *e, Filesys_action what, Instance *disk,
 	if (size < BLOCK_SIZE_DEFAULT)
 		return E_BLOCKSIZE;
 
+	/* Reset partition hint on every entry so a non-RDB FS reader
+	 * downstream of us never sees a stale value from a previous
+	 * partition. The hint is set per partition just before
+	 * recursing into file_system, below. */
+	g_amiga_part_byte_size  = 0;
+	g_amiga_part_block_size = 0;
+
 	int rdb_blknum = find_rdb(e, disk, loc, buf);
 	if (rdb_blknum < 0)
 		return E_NO_FILESYS;
@@ -358,6 +387,35 @@ amiga_rdb(Environ *e, Filesys_action what, Instance *disk,
 					pc_n++;
 				memcpy(path_clean, path, pc_n);
 				path_clean[pc_n] = 0;
+				/* Publish geometry hints so the FS reader
+				 * (FFS in particular) can compute the
+				 * actual root-block position from
+				 * partition size instead of guessing.
+				 *
+				 * AOS FS-block size = de_SizeBlock (longs
+				 * per device-block) * 4 * de_SectorPerBlock
+				 * (device-blocks per FS-block). For a
+				 * standard small-disk partition this is
+				 * 128 * 4 * 1 = 512 bytes. AOS4 FFS2 on
+				 * large disks (>=1 GiB, like peg2-upd3
+				 * Update3) uses de_SectorPerBlock=2,
+				 * yielding 1024-byte FS blocks. The FFS
+				 * reader needs the actual on-disk block
+				 * size to walk the root-block layout
+				 * (sec_type at bsize-4, hash table sized
+				 * to (bsize-224)/4 entries, etc.). */
+				{
+				  uInt sz_block_longs = be32(buf +
+				    PART_OFF_ENVIRONMENT + DE_SIZEBLOCK * 4);
+				  uInt sec_per_blk    = be32(buf +
+				    PART_OFF_ENVIRONMENT
+				    + DE_SECTORPERBLOCK * 4);
+				  if (sz_block_longs == 0) sz_block_longs = 128;
+				  if (sec_per_blk    == 0) sec_per_blk    = 1;
+				  g_amiga_part_byte_size  = p_size;
+				  g_amiga_part_block_size =
+				    sz_block_longs * 4u * sec_per_blk;
+				}
 				/* Recurse into file_system on the partition
 				 * slice. Future FFS/SFS/PFS3 readers will
 				 * match on the DosType and return success. */
