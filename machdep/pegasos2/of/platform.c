@@ -96,6 +96,25 @@ struct nvram_data {
 	char *val;
 };
 
+/*
+ * Compile-time NVRAM defaults branch on CONFIG_TARGET (set in the
+ * top-level Makefile to either qemu or hw, materialised here as
+ * PEGASOS_TARGET_QEMU=1 or PEGASOS_TARGET_HW=1).
+ *
+ * Real Pegasos II has battery-backed M48T59 NVRAM; user `setenv`
+ * changes flow through SF's save_config -> set_nvram ->
+ * machine_nvram_write (machdep.c) -> M48T59 system partition, and
+ * persist across reboots. So the HW defaults below are pessimistic:
+ * auto-boot? = false so the user reaches the ok prompt and can edit
+ * boot-command interactively before turning auto-boot on.
+ *
+ * QEMU pegasos2 doesn't instantiate the M48T59, so machine_nvram_read
+ * always returns "corrupt", load_nvram falls back to these compile-
+ * time defaults on every boot, and any setenv changes are lost on
+ * reset. So the QEMU defaults are optimistic: auto-boot? = true with
+ * a 3-second countdown to the documented AOS4 boot command, since
+ * that's the most useful turnkey behaviour for testing.
+ */
 struct nvram_data g_nvram[] = {
 	{ "real-mode?",           "false"     },
 	{ "security-mode",        "none"      },
@@ -111,29 +130,52 @@ struct nvram_data g_nvram[] = {
 	{ "input-device",         "/failsafe" },
 	{ "output-device",        "/failsafe" },
 	/*
-	 * Boot defaults (Block 7/N). A bare `boot` at the ok prompt
-	 * (no args) triggers SF's do_load (admin.c:1435) which falls
-	 * back to these when the user didn't supply a device or file.
+	 * Boot defaults. A bare `boot` at the ok prompt (no args)
+	 * triggers SF's do_load (admin.c:1435) which falls back to
+	 * boot-device + boot-file when the user didn't supply them.
 	 *     `cd` expands via /aliases/cd to
-	 *       /pci@80000000/ide@C,1/cd@1,0 (Block 5/N install_aliases)
+	 *       /pci@80000000/ide@C,1/cd@1,0 (install_aliases)
 	 *     `/test.elf;1` is what genisoimage's ISO9660 Level-1 PVD
-	 *       uses for our Makefile test-iso target (Block 5/N). For
-	 *       real AOS4 boot the user would `setenv boot-file
-	 *       /amigaboot.of;1` at the ok prompt.
+	 *       uses for the Makefile test-iso target. For real AOS4
+	 *       boot a user would `setenv boot-file /amigaboot.of;1`
+	 *       at the ok prompt (HW build) or rebuild with the
+	 *       boot-command default below (QEMU build).
 	 *
-	 * auto-boot? stays false so the default three-test regression
-	 * matrix output (no CD, unchanged 2208 bytes) is preserved.
-	 * Users enable auto-boot interactively:
-	 *     ok setenv auto-boot? true
-	 *     ok reset
-	 * SF's main.c:262-316 then runs `boot-command` verbatim
-	 * (default "boot") after a 1-second countdown.
+	 * SF main.c:262-316 reads auto-boot? at startup; if true it
+	 * prints "Auto-boot in N seconds - press ESC to abort, ENTER
+	 * to boot:" and waits auto-boot-timeout milliseconds. Any key
+	 * during the countdown aborts to the ok prompt; ENTER skips
+	 * the wait and runs boot-command immediately; timeout expiry
+	 * runs boot-command. boot-command is interpreted verbatim as
+	 * Forth, so it can be any sequence of words including
+	 * `boot hd:0 amigaboot.of bootdevice=DH0`.
 	 */
 	{ "boot-device",          "cd"             },
 	{ "boot-file",            "/test.elf;1"    },
-	{ "boot-command",         "boot"           },
+#if defined(PEGASOS_TARGET_HW)
+	/*
+	 * Real-hardware defaults: boot-command points at AOS4 but
+	 * auto-boot? is OFF so the user can edit the command via
+	 * `setenv boot-command ...` and `setenv auto-boot? true`.
+	 * Both are persisted to the M48T59 system partition.
+	 */
+	{ "boot-command",         "boot hd:0 amigaboot.of bootdevice=DH0" },
 	{ "auto-boot?",           "false"          },
-	{ "auto-boot-timeout",    "1000"           },
+	{ "auto-boot-timeout",    "5000"           },
+#elif defined(PEGASOS_TARGET_QEMU)
+	/*
+	 * QEMU defaults: auto-boot enabled with a 3-second window
+	 * targeted at the standard AOS4 boot command. Headless test
+	 * runs (no disk attached) still reach the ok prompt because
+	 * SF's f_disklbl_load returns E_NO_DEVICE which short-circuits
+	 * back to the prompt without aborting auto-boot.
+	 */
+	{ "boot-command",         "boot hd:0 amigaboot.of bootdevice=DH0" },
+	{ "auto-boot?",           "true"           },
+	{ "auto-boot-timeout",    "3000"           },
+#else
+#error "PEGASOS_TARGET_QEMU or PEGASOS_TARGET_HW must be defined (CONFIG_TARGET=qemu|hw)"
+#endif
 	{ "use-nvramrc?",         "false"          },
 	{ NULL, NULL }                              /* terminator */
 };

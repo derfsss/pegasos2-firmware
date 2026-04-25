@@ -480,6 +480,41 @@ the firmware side of the spec-07 boot handoff is proven.
     firmware, either copy amigaboot.of onto hd1's DH0:, or
     teach the firmware to parse Kicklayout itself (the bboot
     approach). The FS reader is now ready for either path.
+
+12. **CONFIG_TARGET=qemu|hw build flag** (this session). Adds a
+    Makefile knob that branches the compile-time NVRAM defaults
+    in init_options_from_nvram. All other code paths are
+    identical and use runtime probing (M48T59 magic + checksum,
+    W83194 SMBus ACK, SM501 PCI scan) to adapt to the hardware
+    actually present. The macros land as -DPEGASOS_TARGET_QEMU=1
+    or -DPEGASOS_TARGET_HW=1 in CFLAGS + SF_CFLAGS.
+
+    QEMU defaults (auto-boot? = true, auto-boot-timeout = 3000):
+      - 3-second countdown on every fresh boot, since QEMU has
+        no battery-backed M48T59 to persist user setenv changes
+        across reset; defaults are loaded fresh every time.
+      - boot-command = `boot hd:0 amigaboot.of bootdevice=DH0`,
+        the documented AOS4 bring-up command. Falls back to ok
+        prompt cleanly when no disk is attached (default + bridge
+        regression tests still pass).
+      - ESC during countdown aborts to ok; ENTER skips the wait.
+
+    HW defaults (auto-boot? = false, auto-boot-timeout = 5000):
+      - drops straight to ok prompt for safety; user enables
+        auto-boot interactively.
+      - `setenv auto-boot? true` + `setenv boot-command "<cmd>"`
+        flow through SF's save_config -> set_nvram ->
+        machine_nvram_write (machdep.c) -> M48T59 system
+        partition (offsets 0x0200..0x05FF). Battery-backed, so
+        changes persist across reboots and power cycles.
+
+    Build:
+      make                    # CONFIG_TARGET=qemu (default)
+      make CONFIG_TARGET=hw   # firmware tuned for real Pegasos II
+      make CONFIG_TARGET=foo  # error: must be qemu or hw
+
+    Three-test regression matrix passes on both targets
+    (default 0, bridge 0, EXCEPTION_TEST 1).
    cache, M4 ISO9660 FS + fs/fs dispatcher, M5 /aliases + test-
    media generation, M6 machine_go → machine_jump_os integration
    + `boot cd /test.elf` end-to-end, M7 NVRAM defaults +

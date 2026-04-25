@@ -27,6 +27,35 @@ X86EMU      := upstream/x86emu
 SF          := upstream/smartfirmware/bin/of
 SF_MACHDEP  := $(MACHDEP)/of
 
+# CONFIG_TARGET selects the runtime environment: `qemu` (default) or
+# `hw`. Identical code paths -- everything that differs (M48T59 NVRAM
+# presence, W83194 SMBus FSB probe, SM501 framebuffer, etc.) is
+# detected at runtime via probing. This flag only branches the
+# compile-time NVRAM defaults baked into init_options_from_nvram,
+# since on QEMU the M48T59 chip isn't instantiated and defaults
+# load fresh every boot, whereas real HW has battery-backed M48T59
+# that persists user `setenv` changes across reboots.
+#
+# Defaults exposed:
+#   qemu : auto-boot? = true,  auto-boot-timeout = 3000 ms
+#          (boots the install-time boot-command after a 3-sec
+#           countdown that any keypress aborts)
+#   hw   : auto-boot? = false, auto-boot-timeout = 5000 ms
+#          (drops to ok prompt; user enables auto-boot via
+#           `setenv auto-boot? true` and the change persists)
+#
+# Build:
+#   make                    # CONFIG_TARGET=qemu (default)
+#   make CONFIG_TARGET=hw   # firmware tuned for real Pegasos II
+CONFIG_TARGET ?= qemu
+ifeq ($(CONFIG_TARGET),qemu)
+TARGET_CFLAGS := -DPEGASOS_TARGET_QEMU=1
+else ifeq ($(CONFIG_TARGET),hw)
+TARGET_CFLAGS := -DPEGASOS_TARGET_HW=1
+else
+$(error CONFIG_TARGET must be 'qemu' or 'hw' (got '$(CONFIG_TARGET)'))
+endif
+
 # Bare-metal flags. No Linux runtime, no built-ins, big-endian
 # 32-bit PowerPC targeting the 7447/7450 family.
 CFLAGS := \
@@ -37,6 +66,7 @@ CFLAGS := \
     -fno-asynchronous-unwind-tables \
     -O2 -g -std=gnu11 \
     -Wall -Wextra -Werror \
+    $(TARGET_CFLAGS) \
     -I$(MACHDEP)/x86compat \
     -I$(MACHDEP) \
     -I$(X86EMU)/include
@@ -151,6 +181,7 @@ SF_CFLAGS := \
     -Wno-implicit-fallthrough -Wno-char-subscripts \
     -Wno-pointer-sign -Wno-maybe-uninitialized \
     -Wno-shift-count-overflow -Wno-address \
+    $(TARGET_CFLAGS) \
     -I$(SF_MACHDEP) \
     -I$(SF) \
     -I$(SF)/exe \
