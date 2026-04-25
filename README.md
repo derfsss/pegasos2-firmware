@@ -199,3 +199,23 @@ hardware-validation runs are welcome. See
 [PROGRESS.md](PROGRESS.md) for the current open-questions list and
 [SPEC-QUESTIONS.md](SPEC-QUESTIONS.md) for divergences from the
 original spec that need clarification.
+
+## Roadmap to full BIOS replacement
+
+What's still needed to fully replace the original Pegasos II BIOS:
+
+- Test on a real Pegasos II board and fix anything QEMU got wrong.
+- Linux loader — load a kernel + initrd from a Linux partition.
+- MorphOS loader — load MorphOS from a MorphOS partition.
+- Boot from CD-ROM — pick up an AmigaOS 4 install CD and run it.
+- Boot from USB stick.
+- Network boot — load a kernel over Ethernet (PXE / TFTP).
+- Boot from floppy disk.
+- SCSI boot for boards with a SCSI card fitted.
+- Use both IDE channels and slave drives, not just the first master.
+- Show a graphical console on a connected monitor (today it's serial only).
+- Show a setup screen at boot for editing settings without typing Forth.
+- Power management — let the OS suspend and resume the machine.
+- Sound chip (AC'97) initialisation.
+- Faster IDE transfers (DMA instead of programmed I/O).
+- Bundle `amigaboot.of` with the firmware so a fresh install disk just works.
