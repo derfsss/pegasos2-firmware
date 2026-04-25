@@ -229,9 +229,11 @@ CC(machine_font)
  * --------------------------------------------------------------- */
 
 /*
- * The EC() macros in defs.h declare these as extern Retcode fns. A
- * working port provides real ones; we stub them for now so the link
- * resolves. Commit 6+ replaces these with real behaviour.
+ * The EC() macros in defs.h declare these as extern Retcode fns.
+ * machine_probe_all and machine_secondary_diag remain stubbed
+ * (they do nothing meaningful on Pegasos2 -- there's no diagnostic
+ * mode and no probe-all-the-things concept on this board); the
+ * other hooks have real implementations further down.
  *
  *   machine_probe_all      -- "probe-all" device-tree walker hook
  *   machine_secondary_diag -- extended diagnostics
@@ -765,9 +767,8 @@ CC(install_pegasos2_ci_services)
 }
 
 /* --------------------------------------------------------------- *
- *  exec_* helpers -- now supplied by upstream/smartfirmware/bin/of/ *
- *  exe/exe.c, pulled into OF_SUBSET in Block 6/N alongside the      *
- *  registration of pegasos2_ppc_elf_exec in g_exec_list[] above.    *
+ *  exec_* helpers come from upstream/smartfirmware/bin/of/exe/     *
+ *  exe.c; we register pegasos2_ppc_elf_exec in g_exec_list[] above. *
  * --------------------------------------------------------------- */
 
 /* --------------------------------------------------------------- *

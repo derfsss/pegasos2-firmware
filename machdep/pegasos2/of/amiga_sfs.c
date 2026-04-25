@@ -48,6 +48,7 @@
 
 #include "defs.h"
 #include "fs.h"
+#include "byteswap.h"
 
 /* --- On-disk block IDs (4-char big-endian magic) ----------------- */
 #define SFS_BLOCKID_OBJC   0x4F424A43u   /* 'OBJC' ObjectContainer */
@@ -197,20 +198,6 @@ static struct {
 	uInt       volume_name_len;
 	uInt       extent_bn_root;
 } g_sfs;
-
-/* --- Big-endian readers ----------------------------------------- */
-static uInt
-be32(const uByte *p)
-{
-	return ((uInt)p[0] << 24) | ((uInt)p[1] << 16) |
-	       ((uInt)p[2] << 8)  | (uInt)p[3];
-}
-
-static uInt
-be16(const uByte *p)
-{
-	return ((uInt)p[0] << 8) | (uInt)p[1];
-}
 
 /* --- Block I/O helper ------------------------------------------- */
 static Retcode

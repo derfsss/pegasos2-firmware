@@ -11,12 +11,6 @@
  *  u_sleep, dprintf, and get_msecs hooks that defs.h §machine-dependent
  *  interfaces declares.
  *
- *  This is Commit 2 of the multi-commit OF bring-up. The stubs here
- *  are deliberately minimal: enough to link, not yet enough to run.
- *  The `of-test` Makefile target partial-links the SF subset against
- *  this file and prints remaining undefined symbols -- those are the
- *  inputs for Commit 3 (expand the SF subset to satisfy them).
- *
  *  Notable decisions:
  *    * The memory pool starts at 0x00200000 (right after firmware
  *      bss/stack at 0x00100000..0x001FFFFF), 2 MiB long so it ends

@@ -8,7 +8,7 @@
  *
  *  Spec 07 ELF32 PPC BE loader. Provides two public surfaces:
  *
- *  1. Machdep `Exec_entry` registration (Block 6/N). SF's admin.c
+ *  1. Machdep `Exec_entry` registration. SF's admin.c
  *     `f_load`/`f_go` path reads the file into `e->load`, calls
  *     exec_is_exec() to pick a handler from g_exec_list[], then
  *     exec_load() to place PT_LOADs and set e->entrypoint. Our
@@ -17,9 +17,9 @@
  *     file; its is_exec / load callbacks are `elf32_ppc_be_is_exec`
  *     and `elf32_ppc_be_load` below.
  *
- *  2. Forth word `boot-kernel ( load-addr -- )` (Blocks 1/N..5/N).
- *     Directly calls the same validation + load logic on a caller-
- *     supplied address and hands off via machine_jump_os. Used by
+ *  2. Forth word `boot-kernel ( load-addr -- )`. Directly calls
+ *     the same validation + load logic on a caller-supplied
+ *     address and hands off via machine_jump_os. Used by
  *     `test-boot` and `test-boot-bad` to exercise the full spec 07
  *     register handoff without needing the open-dev/disk-label/FS
  *     stack to be working.
@@ -32,8 +32,7 @@
  *      r6 = 0 (reserved)
  *      r7 = e_entry (some OSes check it)
  *      MSR = supervisor, translation on, interrupts disabled
- *  All of that is assembled by machine_jump_os (boot_kernel.S, Boot
- *  1/N..Boot 5/N).
+ *  All of that is assembled by machine_jump_os (boot_kernel.S).
  *
  *  Cache-coherency note: on this firmware SF runs with MSR[IR]=MSR[DR]=0
  *  (real mode) from reset through handoff, so memory writes by the
@@ -49,6 +48,7 @@
 
 #include "defs.h"
 #include "exe.h"
+#include "byteswap.h"
 
 /*
  * Minimal Elf32 Ehdr layout we need. Avoids pulling in <elf.h>;
@@ -107,19 +107,6 @@ uInt g_boot_image_high_end;
  * compiler second-guessing the memory model on an arbitrary
  * user-supplied address.
  */
-static uInt
-be16(const uChar *p)
-{
-	return ((uInt)p[0] << 8) | (uInt)p[1];
-}
-
-static uInt
-be32(const uChar *p)
-{
-	return ((uInt)p[0] << 24) | ((uInt)p[1] << 16) |
-	       ((uInt)p[2] << 8)  | (uInt)p[3];
-}
-
 /* Wraparound-safe 32-bit addition. Returns non-zero on overflow. */
 static int
 u32_add_ovf(uInt a, uInt b, uInt *out)

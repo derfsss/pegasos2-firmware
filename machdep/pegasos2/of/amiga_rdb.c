@@ -49,6 +49,7 @@
 
 #include "defs.h"
 #include "fs.h"
+#include "byteswap.h"
 
 /*
  * Cross-FS partition geometry hint.
@@ -103,13 +104,6 @@ uInt  g_amiga_part_block_size;   /* de_SizeBlock * 4 * de_SectorPerBlock */
 #define DE_LOWCYL               9
 #define DE_HIGHCYL              10
 #define DE_DOSTYPE              16      /* de_DosType: FS identifier */
-
-static uInt
-be32(const uByte *p)
-{
-	return ((uInt)p[0] << 24) | ((uInt)p[1] << 16) |
-	       ((uInt)p[2] << 8)  | (uInt)p[3];
-}
 
 /*
  * Sum-to-zero checksum over `long_count` big-endian longwords.

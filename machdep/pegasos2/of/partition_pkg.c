@@ -51,6 +51,7 @@
  */
 
 #include "defs.h"
+#include "byteswap.h"
 
 /* --- RDB / PartitionBlock layout (mirror of amiga_rdb.c constants) - */
 #define RDB_MAGIC_RDSK    0x5244534Bu
@@ -108,13 +109,6 @@ static const Initentry partition_methods[] = {
 	{ "read",         f_part_read,         INVALID_FCODE },
 	{ NULL,           NULL },
 };
-
-static uInt
-be32(const uByte *p)
-{
-	return ((uInt)p[0] << 24) | ((uInt)p[1] << 16) |
-	       ((uInt)p[2] << 8)  | (uInt)p[3];
-}
 
 /* Get the package's PartitionSelf via the current instance. */
 static PartitionSelf *

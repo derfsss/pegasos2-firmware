@@ -6,7 +6,7 @@
  *  modification, are permitted under the terms of the CodeGen source
  *  license reproduced in LICENSES/CodeGen-smartfirmware.txt.
  *
- *  Block 1/N -- pegasos2 PCI device-tree installer.
+ *  pegasos2 PCI device-tree installer.
  *
  *  install_pci_tree creates /pci@80000000 (VT8231 primary bus, QEMU
  *  PCI_HOST_1) and /pci@c0000000 (secondary expansion bus, QEMU

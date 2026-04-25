@@ -44,6 +44,7 @@
 
 #include "defs.h"
 #include "fs.h"
+#include "byteswap.h"
 
 /* Set by amiga_rdb before recursing into file_system on a partition.
  * Lets us compute the FFS root block position exactly instead of
@@ -153,14 +154,6 @@ static struct {
 	uByte      rootbuf[MAX_BSIZE];
 	uInt       root_block; /* block number of root block */
 } g_ffs;
-
-/* --- Byte / word / longword big-endian readers ----------------- */
-static uInt
-be32(const uByte *p)
-{
-	return ((uInt)p[0] << 24) | ((uInt)p[1] << 16) |
-	       ((uInt)p[2] << 8)  | (uInt)p[3];
-}
 
 /* --- Block I/O helper ------------------------------------------ */
 /* Read `block_num` (relative to the partition, 0-based in

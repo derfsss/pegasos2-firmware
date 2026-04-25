@@ -67,6 +67,7 @@
 
 #include "defs.h"
 #include "fs.h"
+#include "byteswap.h"
 
 #define PFS_BSIZE           512u
 
@@ -180,20 +181,6 @@ static struct {
 	/* Up to SMALL_NUM_INDEXBLOCKS (99) BLCKs addressing indexblocks. */
 	uInt      indexblocks[SMALL_NUM_INDEXBLOCKS];
 } g_pfs;
-
-/* --- Byte/word/longword big-endian readers --------------------- */
-static uInt
-be32(const uByte *p)
-{
-	return ((uInt)p[0] << 24) | ((uInt)p[1] << 16) |
-	       ((uInt)p[2] << 8)  | (uInt)p[3];
-}
-
-static uInt
-be16(const uByte *p)
-{
-	return ((uInt)p[0] << 8) | (uInt)p[1];
-}
 
 /* --- Block I/O helper ------------------------------------------- */
 static Retcode

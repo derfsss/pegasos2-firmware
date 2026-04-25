@@ -10,14 +10,9 @@
  *  (upstream/smartfirmware/bin/of). Parallels bebox/machdep.h and the
  *  other per-board ports in the upstream tree: declares the types
  *  SmartFirmware uses, the memory-pool and stack sizes, and the
- *  identity strings that appear in the banner.
- *
- *  This is Commit 1 of a multi-commit OF bring-up. Nothing in this
- *  header is yet called from our firmware; it exists so SmartFirmware's
- *  portable core compiles cleanly against a Pegasos2 machdep worldview.
- *  Subsequent commits add machine_* function definitions, wire malloc
- *  to a DRAM arena, and finally hand off from phase1 to SmartFirmware's
- *  main() to reach an `ok` prompt on UART1.
+ *  identity strings that appear in the banner. The machine_*
+ *  functions referenced by SF's defs.h are implemented in
+ *  machdep.c and platform.c in this directory.
  */
 
 #ifndef MACHDEP_H
@@ -188,10 +183,10 @@ typedef uLong uOctlet;
 
 /*
  * Default font selection. SmartFirmware's fb.c expects a compile-time
- * font chosen by FONT_FILE and matching metrics. Commit 1 doesn't
- * pull in fb.c, so the macros below are only consulted by code we
- * might add in a later commit (framebuffer support). Using the 8x16
- * courier matches bebox's default and keeps the image small.
+ * font chosen by FONT_FILE and matching metrics. fb.c is not yet
+ * pulled into the build (no framebuffer console wired); these macros
+ * exist for when it lands. The 8x16 courier matches bebox's default
+ * and keeps the binary small.
  */
 #define FONT_FILE     "cour8x16.font"
 #define FONT_WIDTH    8

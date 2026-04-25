@@ -9,13 +9,12 @@
  *  Freestanding libc stubs for the vendored x86emu core.
  *
  *  Scope: the minimum set of symbols the emulator requires to LINK
- *  that nobody else provides. As of Commit 4 of the OF bring-up,
- *  SmartFirmware's stdlib.c supplies memset/memcpy/memmove/strlen
- *  (and others) for the whole firmware -- so those definitions live
- *  there now, not here, to avoid multiple-definition at link time.
- *  The x86emu never calls printf/sprintf at runtime in our use
- *  (option-ROM path emits output via the ROM's own BIOS services),
- *  so the remaining stubs are no-ops and keep the emulator linkable.
+ *  that nobody else provides. memset/memcpy/memmove/strlen come from
+ *  SmartFirmware's stdlib.c (used firmware-wide); we only stub here
+ *  what's left. The x86emu never calls printf/sprintf at runtime in
+ *  our use case -- the option-ROM path emits output via the ROM's
+ *  own BIOS services -- so these stubs are no-ops, just enough to
+ *  keep the emulator linkable.
  */
 
 #include <stddef.h>

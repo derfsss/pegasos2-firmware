@@ -6,7 +6,7 @@
  *  modification, are permitted under the terms of the CodeGen source
  *  license reproduced in LICENSES/CodeGen-smartfirmware.txt.
  *
- *  Block 2/N -- VT8231 PCI IDE driver attachment.
+ *  VT8231 PCI IDE driver attachment.
  *
  *  Upstream isa/atadisk.c provides the generic ATA/ATAPI driver; it
  *  is designed to be callable from any bus-layer glue that can supply
@@ -22,8 +22,8 @@
  *    - Controller-level method table (open/close/decode-unit/
  *      encode-unit/dma-alloc/dma-free/selftest).
  *    - install_ide_driver(): locates the IDE controller node built
- *      by install_pci_tree (Block 1/N), reads its BARs to decide
- *      legacy vs native port layout, registers our methods, calls
+ *      by install_pci_tree, reads its BARs to decide legacy vs
+ *      native port layout, registers our methods, calls
  *      probe_ata_disks to create child cd@/disk@ nodes with the
  *      full ata_disk_methods method table (open/close/read-blocks/
  *      write-blocks/block-size/etc).
@@ -388,7 +388,7 @@ atapi_type_str(Int classcode)
  * which atadisk.c's probe_ata_disk encodes as <ctlr id 0> per
  * isa/atadisk.c:1198-1200. reg is a binary property and its first
  * byte is typically 0, so go straight to the Entry rather than
- * prop_get_str (NUL-byte truncation -- Block 2/N gotcha).
+ * prop_get_str (which would truncate at the leading NUL).
  */
 static int disk_reg(Package *c, Int *ctlr, Int *id)
 {
