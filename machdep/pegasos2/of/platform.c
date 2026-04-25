@@ -901,7 +901,7 @@ const Command install_list[] = {
 	install_disklabel,
 	install_ide_driver,
 	install_aliases,
-	/* install_partition_packages, */  /* TEMP: isolate nextprop crash */
+	install_partition_packages,
 	install_client_services,
 	install_pegasos2_ci_services,
 	NULL
