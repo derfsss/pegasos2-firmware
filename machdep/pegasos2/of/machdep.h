@@ -74,11 +74,11 @@
 /*
  * Identity strings that appear in the OF banner and device-tree root
  * properties. No commas allowed per SmartFirmware convention.
- * FIRMWARE_REV bumps with each release; 0.1 reflects pre-alpha.
+ * FIRMWARE_REV bumps with each release.
  */
 #define MANUFACTURER       "bPlan-CodeGen"
 #define MACHINE_TYPE       "Pegasos2"
-#define FIRMWARE_REV       "0.1-cleanroom"
+#define FIRMWARE_REV       "0.5-cleanroom"
 #define STANDARD_REV       0x00030000   /* IEEE-1275 version 3.0 */
 
 /*

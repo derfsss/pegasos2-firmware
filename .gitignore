@@ -6,6 +6,10 @@ build/*.map
 build/*.lst
 build/*.d
 
+# Spec-author handoff note (preserved locally; not part of the
+# firmware project's public repo content)
+HANDOFF.md
+
 # Editor / OS cruft
 *.swp
 *~
