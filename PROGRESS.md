@@ -3,6 +3,32 @@
 This file is the handoff document for the next impl-agent session.
 Read it after `CLAUDE.md` and `docs/START-HERE.md`.
 
+## Licence-hygiene audit (2026-04-26)
+
+Tree-wide audit of every vendored upstream file's licence
+header surfaced four files that LICENSES/SciTech-x86emu.txt
+mis-described as SciTech permissive but were actually GPLv2-only
+or had no licence header at all:
+
+  upstream/x86emu/besys.c    -- GPLv2-only (Freescale wrapper)
+  upstream/x86emu/atibios.c  -- GPLv2-only (Freescale wrapper)
+  upstream/x86emu/vesa.c     -- no header (inherits U-Boot GPLv2-or-later)
+  upstream/x86emu/vesa.h     -- no header (inherits U-Boot GPLv2-or-later)
+
+None of those was ever compiled into the firmware (the Makefile
+only walks `upstream/x86emu/x86emu/`, which is the SciTech-
+licensed realmode-emulator core). To keep the source bundle
+honest about licensing and to prevent any future build rule from
+silently inheriting GPL onto the firmware, all four were deleted
+along with three SciTech-licensed but unused wrapper files
+(bios.c, biosemu.c, biosemui.h) that came from the same U-Boot
+import. Bit-identical firmware before/after (md5 unchanged).
+LICENSES/SciTech-x86emu.txt + LICENSE updated to reflect the
+trimmed tree. Q10 filed against `docs/START-HERE.md` +
+`CLEAN-ROOM-BOUNDARY.md` for separately mis-describing
+`openbios/smartfirmware` as GPLv2 (it's actually CodeGen
+permissive).
+
 ## Hardware-audit refactor (2026-04-26)
 
 Schematic-vs-code audit (against `references/Pegasos_2b5.pdf`)

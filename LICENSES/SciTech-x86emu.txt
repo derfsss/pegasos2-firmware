@@ -1,13 +1,31 @@
 SciTech x86 Realmode Emulator Library license
 ==============================================
 
-This license applies to all files under upstream/x86emu/, which
-were vendored from U-Boot 2015.d (the ACube Sam460 distribution)
-at drivers/bios_emulator/. Original copyright holders are
-SciTech Software, Inc., David Mosberger-Tang, Egbert Eich, and
-Freescale Semiconductor, Inc. (Jason Jin). U-Boot itself is
-GPL-2.0-or-later, but the bios_emulator driver carries its
-original SciTech permissive license, which is what we inherit.
+This license applies to every file under upstream/x86emu/ that
+is present in this tree:
+
+  - upstream/x86emu/x86emu/{debug,decode,ops,ops2,prim_ops,sys}.c
+    -- the realmode emulator core compiled into the firmware
+  - upstream/x86emu/include/x86emu.h
+  - upstream/x86emu/include/x86emu/{debug,decode,ops,prim_asm,
+                                     prim_ops,regs,x86emui}.h
+
+Original copyright holders are SciTech Software, Inc., David
+Mosberger-Tang, Egbert Eich, and Freescale Semiconductor, Inc.
+(Jason Jin). The files were vendored from the U-Boot 2015.d
+ACube Sam460 distribution at drivers/bios_emulator/. U-Boot
+itself is GPL-2.0-or-later, but the SciTech-derived realmode
+emulator core carries its original permissive license, which is
+what we inherit.
+
+The original U-Boot drivers/bios_emulator/ also contained four
+GPLv2-only or no-licence-header wrapper files (besys.c,
+atibios.c, vesa.c, vesa.h) and three SciTech-licensed but
+unused glue files (bios.c, biosemu.c, biosemui.h). None of
+those was ever compiled into the Pegasos II firmware; they were
+removed from this tree on 2026-04-26 to keep the source bundle
+free of GPL-licensed code and to make this license-summary
+accurate.
 
 Full text reproduced verbatim from the per-file header:
 

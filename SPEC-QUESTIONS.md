@@ -662,3 +662,49 @@ for "FireWire bring-up (VT6306)" would be consistent. No code
 change is implied by this question -- it is purely a
 documentation-completeness note tied to the schematic now stored
 in `references/`.
+
+---
+
+## Q10. `openbios/smartfirmware` mis-described as GPLv2
+
+**Spec claim:**
+
+`docs/START-HERE.md` line 34:
+
+> Fork `github.com/openbios/smartfirmware` (GPLv2) and add a
+> Pegasos2 machdep layer. This is the lowest-effort start.
+> Comply with the GPL's terms if you go this route.
+
+`CLEAN-ROOM-BOUNDARY.md` line 71:
+
+> `openbios/smartfirmware` source code (GPLv2; if you import,
+> comply with its licence), and any community documentation
+> cited in the spec's footnotes.
+
+**Observed:** The `openbios/smartfirmware` repo is a publication
+of CodeGen Inc.'s SmartFirmware tree under CodeGen's own
+permissive source license (a BSD-3-clause-style licence with an
+added source-availability clause). The full text is reproduced
+in `upstream/smartfirmware/COPYRIGHT` and in
+`LICENSES/CodeGen-smartfirmware.txt`. It is NOT GPLv2 and the
+implied "comply with the GPL's terms" advice is misleading.
+
+**Impl observation:** The implementation followed the
+permissive license correctly: every file under
+`upstream/smartfirmware/` retains its CodeGen header verbatim,
+and every new file under `machdep/pegasos2/` carries the same
+CodeGen-style header with our copyright line added. The
+firmware binary releases honour clause 3 of the CodeGen license
+by publishing the full source alongside the binary. No GPL
+obligations apply because no GPL-licensed code is built into
+the firmware (audit completed 2026-04-26 alongside the removal
+of `upstream/x86emu/{besys,atibios,vesa}.{c,h}`, the GPLv2-only
+or no-licence-header U-Boot wrapper files that lived alongside
+the SciTech-licensed realmode emulator core).
+
+**Suggested resolution:** Update `docs/START-HERE.md` § "First
+decisions to make" and `CLEAN-ROOM-BOUNDARY.md` § "Permitted
+references" to describe `openbios/smartfirmware` as the CodeGen
+SmartFirmware source license (BSD-3-clause-style) rather than
+GPLv2. CLAUDE.md already flags this; the underlying docs need
+an editorial pass from the spec author.

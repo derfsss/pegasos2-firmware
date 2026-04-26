@@ -39,6 +39,15 @@ Components and their licenses:
    license (BSD-3-clause-style). Full text:
    LICENSES/SciTech-x86emu.txt.
 
+   Only the SciTech-licensed realmode emulator core
+   (upstream/x86emu/x86emu/*.c and the x86emu/*.h headers) is
+   vendored. The U-Boot bios_emulator wrapper files that lived
+   alongside it in the original U-Boot tree (besys.c, atibios.c,
+   vesa.c, vesa.h) were GPL-2.0-only or carried no licence
+   header and have been removed from this tree to keep the
+   source bundle GPL-free; the Pegasos II firmware never
+   referenced them.
+
 Full-text license files
 -----------------------
 
