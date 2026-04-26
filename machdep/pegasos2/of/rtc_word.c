@@ -183,36 +183,56 @@ CC(install_pegasos2_ci_services)
 	}
 
 	/*
-	 * NOTE on post-quiesce kernel-mode console output:
-	 *
-	 * Linux PPC32 and MorphOS Quark both run through our CI
-	 * (finddevice / getprop / claim / RTAS / quiesce) cleanly,
-	 * confirmed by trace, but go silent on UART after quiesce.
-	 * The kernel-mode 8250 / Quark serial driver expects to
-	 * bind to a device-tree node with `compatible="ns16550"`,
-	 * a real `reg` describing the UART MMIO window, and a
-	 * `clock-frequency`. Our /failsafe is virtual (no such reg),
-	 * and we don't currently expose a /pci@80000000/isa@c/
-	 * serial@i3f8 child node either, so the kernel binds nothing.
-	 *
-	 * Two alternatives were tried here and both crashed the
-	 * firmware mid-boot:
-	 *  - prop_set_str("linux,stdout-path", "/failsafe") on
-	 *    /chosen: Linux's own setprop overwrites this and SF's
-	 *    property-list walker (find_table at fff18a54)
-	 *    dereferences a corrupted pointer (r31="iiii") in a
-	 *    later getprop, DSI-faulting.
-	 *  - Adding `compatible="ns16550"` + clock-frequency to
-	 *    /failsafe directly: same corruption pattern.
-	 *
-	 * Both suggest upstream nextprop / find_table can't safely
-	 * coexist with OS-driven setprop in the strings we add.
-	 * Working through that bug is a sizeable upstream-SF
-	 * investigation -- deferred. The /rtas install above is the
-	 * meaningful win this round: with it, Quark / Linux complete
-	 * prom_init / instantiate-rtas / quiesce successfully (vs.
-	 * "missing /rtas -> quiesce(rc=-1)" before).
+	 * Tell post-quiesce CHRP OSes (Linux, MorphOS, NetBSD-PowerPC)
+	 * which device-tree node hosts the boot console. Set as STRING
+	 * properties at install time. Linux's prom_init reads these
+	 * before quiesce; once quiesce returns the kernel uses its own
+	 * console driver bound to the matching node (see /failsafe
+	 * augmentation below).
 	 */
+	if (e->chosen != NULL && e->chosen->props != NULL) {
+		(void)prop_set_str(e->chosen->props,
+		             (Byte *)"linux,stdout-path", CSTR,
+		             (Byte *)"/failsafe", CSTR);
+		(void)prop_set_str(e->chosen->props,
+		             (Byte *)"stdout-path", CSTR,
+		             (Byte *)"/failsafe", CSTR);
+	}
+
+	/*
+	 * Augment /failsafe with the metadata Linux's of_serial / 8250
+	 * driver needs to bind a real-iron driver to UART1 after
+	 * quiesce. /failsafe was created by upstream's install_failsafe
+	 * with only device_type="serial" -- the kernel finds it via
+	 * stdout-path but can't open it without `compatible` (driver
+	 * matching) and `reg` (where in the address space the chip
+	 * lives).
+	 *
+	 * UART1 is a 16550-compatible at PCI1 I/O port 0x3F8, which
+	 * appears on the CPU MMIO bus at 0xFE0003F8 (= PCI1_IO_BASE +
+	 * legacy ISA port 0x3F8). The 8250 driver expects an MMIO base
+	 * for ns16550 compatible nodes.
+	 */
+	{
+		extern Package *find_device(Environ *e, Byte *path, Int len);
+		Package *fs = find_device(e, (Byte *)"/failsafe", CSTR);
+		if (fs != NULL && fs->props != NULL) {
+			(void)prop_set_str(fs->props,
+			    (Byte *)"compatible", CSTR,
+			    (Byte *)"ns16550", CSTR);
+			static const uByte regbuf[8] = {
+			    0xFE, 0x00, 0x03, 0xF8,   /* phys: 0xFE0003F8 */
+			    0x00, 0x00, 0x00, 0x08    /* size: 8 bytes    */
+			};
+			(void)add_property(fs->props, (Byte *)"reg",
+			    CSTR, (Byte *)regbuf, (Int)sizeof regbuf);
+			(void)prop_set_int(fs->props,
+			    (Byte *)"clock-frequency", CSTR,
+			    1843200);
+			(void)prop_set_int(fs->props,
+			    (Byte *)"current-speed", CSTR, 9600);
+		}
+	}
 
 	Retcode r = init_entries(e, e->client->dict, init_pegasos2_ci);
 	if (r != NO_ERROR)
