@@ -37,6 +37,7 @@
 
 extern Package *find_first_hd_disk(Environ *e);
 extern Package *find_first_cd(Environ *e);
+extern Retcode f_set_bootargs(Environ *e);
 
 /* --- DosType classification ------------------------------------ */
 
@@ -257,7 +258,17 @@ loader_morphos(Environ *e, Package *part)
 static Retcode try_cd_boot(Environ *e, const char *path)
 {
 	Byte cmd[64];
-	/* bprintf's return value is unreliable (it returns the post-
+	/* `cd:0` (whole-disk slice) rather than the bare `cd` alias.
+	 * Some install ISOs ship a hybrid partition table to support
+	 * Apple PMAP machines (Debian PPC, MorphOS 3.x); that triggers
+	 * SF's dos-partition reader to interpret our path as a
+	 * partition name and abort with `unknown partition <path>`.
+	 * The `:0` qualifier tells SF to skip partition resolution
+	 * and treat the device as raw, after which the ISO9660
+	 * reader takes over. ISOs without a partition table (the
+	 * AOS4 install CD is one) handle either form fine.
+	 *
+	 * bprintf's return value is unreliable (it returns the post-
 	 * loop strlen of an already-NUL-terminated walking pointer,
 	 * which is 0 -- documented in machdep.c's dprintf comment).
 	 * Walk the buffer ourselves for the actual length. */
@@ -295,11 +306,42 @@ loader_linux_cd(Environ *e)
 	return E_UNSUPPORTED_FILESYS;
 }
 
+/*
+ * MorphOS Quark kernel from a CD (verified against
+ * morphos-3.19.iso). Loads /boot.img, then publishes
+ * `rds=0` on /chosen/bootargs before `go`.
+ *
+ * Per MorphOS docs (Booting_MorphOS.txt §3, "Boot arguments"):
+ * the `ramdebug` arg routes Quark debug output to a RAM buffer;
+ * setting `ramdebugsize=0` (rds=0) disables the buffer and
+ * "enables serial cable debug on a Pegasos, Pegasos2 and Efika".
+ * Without this, /chosen/bootargs would be the literal
+ * "boot.img" (SF's do_load overwrite of the args field) and
+ * Quark falls back to its compile-time default, which is the
+ * RAM ringbuffer mode -- visible boot output stops as soon as
+ * we transfer control. With rds=0 the kernel's debug printk
+ * stream lands on UART1 and the user sees boot progress.
+ */
 static Retcode
 loader_morphos_cd(Environ *e)
 {
 	cprintf(e, "smart-boot: trying MorphOS bootstrap from CD\n");
-	return try_cd_boot(e, "boot.img");
+
+	const char *load_cmd = "load cd /boot.img";
+	Retcode r = interp_text(e, (Byte *)load_cmd,
+	                        (Int)strlen(load_cmd));
+	if (r != NO_ERROR)
+		return r;
+
+	static const char cmdline[] = "rds=0";
+	PUSHP(e, (Byte *)cmdline);
+	PUSH(e, (Cell)(sizeof cmdline - 1));
+	r = f_set_bootargs(e);
+	if (r != NO_ERROR)
+		return r;
+
+	const char *go_cmd = "go";
+	return interp_text(e, (Byte *)go_cmd, (Int)strlen(go_cmd));
 }
 
 /*
@@ -316,15 +358,13 @@ loader_morphos_cd(Environ *e)
  * Partition Map Debian's PPC ISO ships, doesn't interpret
  * /install/... as a partition name.
  */
-extern Retcode f_set_bootargs(Environ *e);
-
 static Retcode
 loader_linux_cd_chrp(Environ *e)
 {
 	cprintf(e, "smart-boot: trying Debian CHRP wrapper from CD\n");
 
 	const char *load_cmd =
-	    "load cd:0 /install/powerpc/vmlinuz-chrp.initrd";
+	    "load cd /install/powerpc/vmlinuz-chrp.initrd";
 	Retcode r = interp_text(e, (Byte *)load_cmd,
 	                        (Int)strlen(load_cmd));
 	if (r != NO_ERROR)

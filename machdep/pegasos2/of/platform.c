@@ -61,7 +61,25 @@ extern Filesys g_dos_fat;          /* upstream/fs/dosfat.c */
 extern Filesys g_linux_ext2fs;     /* upstream/fs/ext2fs.c */
 
 Filesys *g_filesys[] = {
-	/* Partition parsers first so they can carve the disk before
+	/*
+	 * ISO9660 first. The Debian PPC and MorphOS install discs
+	 * both ship a hybrid layout: an Apple Partition Map (or a
+	 * DOS MBR with valid 0x55 0xAA boot signature) at sector 0
+	 * for Mac/PC dual-boot, AND a Joliet/Rock Ridge ISO9660
+	 * volume at the standard sector 16 offset. With dos_partition
+	 * walking first, it consumes the path, recurses into "partition
+	 * 0" and the ISO9660 reader never gets a turn -- net result
+	 * "filesystem not supported" on every CHRP-bootable Linux/
+	 * MorphOS install disc that isn't a pure ISO9660 like AOS4's.
+	 *
+	 * Putting iso9660_compat first is safe because the upstream
+	 * reader scans sectors 16..31 for the ISO9660 ID string and
+	 * returns E_NO_FILESYS quickly on disks that lack it; HD's
+	 * with RDB / MBR fall through to the partition parsers below
+	 * without any data corruption.
+	 */
+	&g_iso9660_compat,               /* ISO9660 (CDs, hybrid CDs) */
+	/* Partition parsers next so they can carve a HD before
 	 * whole-disk FS readers probe the surface. */
 	&g_dos_partition,                /* MBR / DOS partition table */
 	&g_amiga_rdb,                    /* Amiga Rigid Disk Block */
@@ -70,7 +88,6 @@ Filesys *g_filesys[] = {
 	&g_amiga_sfs,                    /* SmartFileSystem (SFS\0, SFS\2) */
 	&g_amiga_pfs3,                   /* PFS3 (PFS\1, PFS\2, AFS\1) */
 	&g_fs_exfat,                     /* exFAT */
-	&g_iso9660_compat,
 	&g_dos_fat,
 	&g_linux_ext2fs,
 	NULL
