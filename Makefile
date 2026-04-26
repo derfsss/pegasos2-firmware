@@ -323,7 +323,8 @@ OF_MACHDEP_OBJS := \
     $(BUILD)/of_amiga_ffs.o \
     $(BUILD)/of_amiga_sfs.o \
     $(BUILD)/of_amiga_pfs3.o \
-    $(BUILD)/of_fs_exfat.o
+    $(BUILD)/of_fs_exfat.o \
+    $(BUILD)/of_iso9660_compat.o
 
 $(BUILD)/of_platform.o: $(SF_MACHDEP)/platform.c | $(BUILD)
 	$(CC) $(SF_CFLAGS) -I$(MACHDEP) -I$(SF)/fs -c $< -o $@
@@ -398,6 +399,13 @@ $(BUILD)/of_amiga_pfs3.o: $(SF_MACHDEP)/amiga_pfs3.c | $(BUILD)
 # exfat-specification. Boot-sector parse, FAT chain walk, 32-byte
 # directory-entry sets (0x85 File + 0xC0 Stream + 0xC1 FileName).
 $(BUILD)/of_fs_exfat.o: $(SF_MACHDEP)/fs_exfat.c | $(BUILD)
+	$(CC) $(SF_CFLAGS) -I$(SF)/fs -c $< -o $@
+
+# ISO9660 path-normalisation wrapper: strips ;version suffixes so
+# `boot cd /amigaboot.of;1` works on modern CDs whose on-disk
+# names are already bare. Sits in front of upstream/fs/iso9660.c
+# in the g_filesys[] dispatch list.
+$(BUILD)/of_iso9660_compat.o: $(SF_MACHDEP)/iso9660_compat.c | $(BUILD)
 	$(CC) $(SF_CFLAGS) -I$(SF)/fs -c $< -o $@
 
 # Append OF to the firmware link target. phase1_c_main() calls SF's
