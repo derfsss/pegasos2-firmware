@@ -182,6 +182,38 @@ CC(install_pegasos2_ci_services)
 		             (Byte *)"serial debuglevel=1", CSTR);
 	}
 
+	/*
+	 * NOTE on post-quiesce kernel-mode console output:
+	 *
+	 * Linux PPC32 and MorphOS Quark both run through our CI
+	 * (finddevice / getprop / claim / RTAS / quiesce) cleanly,
+	 * confirmed by trace, but go silent on UART after quiesce.
+	 * The kernel-mode 8250 / Quark serial driver expects to
+	 * bind to a device-tree node with `compatible="ns16550"`,
+	 * a real `reg` describing the UART MMIO window, and a
+	 * `clock-frequency`. Our /failsafe is virtual (no such reg),
+	 * and we don't currently expose a /pci@80000000/isa@c/
+	 * serial@i3f8 child node either, so the kernel binds nothing.
+	 *
+	 * Two alternatives were tried here and both crashed the
+	 * firmware mid-boot:
+	 *  - prop_set_str("linux,stdout-path", "/failsafe") on
+	 *    /chosen: Linux's own setprop overwrites this and SF's
+	 *    property-list walker (find_table at fff18a54)
+	 *    dereferences a corrupted pointer (r31="iiii") in a
+	 *    later getprop, DSI-faulting.
+	 *  - Adding `compatible="ns16550"` + clock-frequency to
+	 *    /failsafe directly: same corruption pattern.
+	 *
+	 * Both suggest upstream nextprop / find_table can't safely
+	 * coexist with OS-driven setprop in the strings we add.
+	 * Working through that bug is a sizeable upstream-SF
+	 * investigation -- deferred. The /rtas install above is the
+	 * meaningful win this round: with it, Quark / Linux complete
+	 * prom_init / instantiate-rtas / quiesce successfully (vs.
+	 * "missing /rtas -> quiesce(rc=-1)" before).
+	 */
+
 	Retcode r = init_entries(e, e->client->dict, init_pegasos2_ci);
 	if (r != NO_ERROR)
 		return r;
