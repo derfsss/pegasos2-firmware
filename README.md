@@ -250,4 +250,3 @@ What's still needed to fully replace the original Pegasos II BIOS:
 - Power management — let the OS suspend and resume the machine.
 - Sound chip (AC'97) initialisation.
 - Faster IDE transfers (DMA instead of programmed I/O).
-- Bundle `amigaboot.of` with the firmware so a fresh install disk just works.
