@@ -123,11 +123,27 @@ extern volatile uint32_t _ms_tick_count;
 #define PEGASOS2_DRAM_TOP        0x30000000u
 
 /*
- * The OS-visible /memory range starts at 0x00200000 -- below that
- * sits firmware code/data + exception vectors. SF's malloc pool
- * lives inside the reported range (at 0x01100000) and gets
+ * The OS-visible /memory range starts at 0x00200000 -- below
+ * that sits firmware code/data + exception vectors. SF's malloc
+ * pool lives inside the reported range (at 0x01100000) and gets
  * pre-claimed during install_memory so /memory/available
  * correctly excludes it.
+ *
+ * Earlier I tried reporting base=0 to satisfy a BUG_ON in
+ * Linux PPC32's setup_initial_memory_limit (arch/powerpc/mm/
+ * ppc_mmu_32.c -- it asserts first_memblock_base != 0 traps
+ * the kernel). With base=0 + a fixed-address pre-claim of
+ * 0..0x200000 to keep OSes from stepping on our exception
+ * vectors, AOS4 boot still worked end-to-end -- but Linux
+ * still panic'd at the same BUG_ON. Verified via debug print
+ * that /memory/reg WAS encoded as <0, 0x30000000> and the
+ * single store to memstart_addr in early_init_dt_add_memory_
+ * arch should have set it to 0, yet the trap fired anyway.
+ * The path that actually sets memstart_addr to a non-zero
+ * value lives somewhere else in Linux's wrapper / pegasos
+ * platform fixup that we couldn't trace from QEMU's int log.
+ * Reverted to the working layout; Linux post-quiesce still
+ * traps but at least AOS isn't disturbed.
  */
 #define PEGASOS2_MEM_REPORT_BASE 0x00200000u
 #define PEGASOS2_MEM_REPORT_SIZE (PEGASOS2_DRAM_TOP - PEGASOS2_MEM_REPORT_BASE)
@@ -312,6 +328,7 @@ machine_initialize(void)
 
 	return init_malloc((Byte *)PEGASOS2_MEM_POOL_BASE, MALLOC_POOL);
 }
+
 
 /*
  * machine_init_args is NOT defined here -- SmartFirmware's nvram.c
