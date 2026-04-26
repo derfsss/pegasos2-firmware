@@ -445,3 +445,79 @@ the current text:
   only gate between cause bits and the CPU's interrupt line.
 - The "`@+0x0C68..0x0C74`" register range in the leading
   paragraph -- actual offsets are `@+0x004..0x024` as tabled.
+
+---
+
+## Q7. The Pegasos II hardware schematic shows no M48T59 chip (spec 08)
+
+**Spec claim:** `docs/08-nvram.md` (whole chapter) and
+`docs/00-overview.md` line 18 identify the Pegasos II NVRAM as
+
+> ST M48T59 TimeKeeper (8 KiB SRAM + RTC). Battery-backed. Holds OF
+> environment variables, device aliases, and `nvramrc`. Accessed
+> via ISA I/O.
+
+with ports `0x74` (addr lo) / `0x75` (addr hi) / `0x77` (data) on
+the VT8231 ISA bus, and a four-partition layout filling the chip's
+8 KiB.
+
+**Observed:** The publicly available Pegasos II hardware schematic
+[`Pegasos_2b5.pdf`](https://www.powerdeveloper.org/assets/files/pegasos/Pegasos_2b5.pdf),
+sheet 23 of 32 ("VT8231 Batterie"), shows no M48T59 anywhere in
+the design. The only battery-backed component is the **VT8231
+southbridge's own internal RTC**:
+
+  - VT8231 pins `RTCX1` (E3) / `RTCX2` (F5) connect to a 32.768 KHz
+    crystal (X2) with 10 pF / 22 pF loading caps (C65, C67).
+  - VT8231 pin `VBAT` (E1) is fed by a CR2032 lithium coin cell
+    (B1) through a BAT54C Schottky diode (D1) and a 330 R resistor
+    (R47), with C66 100 nF decoupling.
+
+That matches QEMU's `pc-bios/dtb/pegasos2.dts`, which declares an
+`rtc@i70` node `compatible = "ds1385-rtc"` at I/O port `0x70-0x71`
+(the standard PC/AT RTC address pair, which is what the VT8231
+internal RTC presents to ISA software). It also matches the
+Linux CHRP NVRAM driver, which talks to NVRAM via RTAS hypercalls
+rather than direct chip I/O. Q4's "QEMU has no M48T59 model" is
+explained by this finding -- there's nothing for QEMU to model.
+
+**Impl observation:** Our `machdep/pegasos2/m48t59.c` driver
+targets a chip that the schematic suggests does not exist. On
+QEMU the absence is benign (reads return 0xFF, magic-check fails,
+SF falls back to compile-time defaults; we already documented
+this in Q4). On real hardware the driver would presumably also
+fail silently, with the same fallback behaviour, but we'd lose
+cross-boot OF env-var persistence for users who flash the firmware
+and expect it to remember `setenv` changes.
+
+**Suggested resolution:** Re-investigate the Pegasos II NVRAM
+hardware. Three likely outcomes:
+
+1. **The board really has only the VT8231 internal RTC** (128 bytes
+   of CMOS RAM behind the standard PC RTC interface at 0x70-0x71).
+   In that case `docs/08-nvram.md` needs a complete rewrite around
+   that chip, and SF's NVRAM partitioning needs to fit in 128 bytes
+   (or move OF env vars into a reserved region of the boot flash
+   itself).
+
+2. **A different board revision has the M48T59.** Pegasos_2b5 is
+   beta-5; production boards may have added one. If so, the
+   schematic for the production revision would be the citation we
+   need, and the docs are correct for those boards but not for the
+   beta.
+
+3. **OF env vars on the original firmware live in flash, not in
+   battery-backed RAM.** The original CodeGen SmartFirmware may
+   reserve a sector of the AMD Am29F040B boot flash for env-var
+   persistence; the M48T59 reference in our docs would then be
+   either a red herring or a different storage tier we haven't
+   identified.
+
+Resolution requires the maintainer (the spec author) to confirm
+which case applies. Until then `m48t59.c` stays in tree but is
+effectively a no-op on every target.
+
+Related: this finding is logged in BOOT.md / FEATURES.md as
+"NVRAM persistence is HW-only and not yet validated on metal";
+the schematic finding tightens that to "and the documented
+mechanism may not match the actual hardware."
