@@ -521,3 +521,117 @@ Related: this finding is logged in BOOT.md / FEATURES.md as
 "NVRAM persistence is HW-only and not yet validated on metal";
 the schematic finding tightens that to "and the documented
 mechanism may not match the actual hardware."
+
+---
+
+## Q8. Clock generator is ICS9248-151, not Winbond W83194 (spec 00)
+
+**Spec claim:** `docs/00-overview.md` line 23 lists the board's
+clock generator as
+
+> Winbond W83194 (programmable, SMBus-controlled).
+
+and `docs/05-clock-and-timer.md` describes a register layout
+matching Winbond's W83194-family datasheet (FSB select in the low
+three bits of register 0x03 at SMBus slave address 0x69).
+
+**Observed:** The Pegasos II beta-5 schematic
+(`references/Pegasos_2b5.pdf`, sheet "Clock Generator") identifies
+the board's clock chip as
+
+> **ICS9248-151**
+
+(an Integrated Circuit Systems / IDT part, not a Winbond part).
+ICS9248 family register layout differs from W83194: ICS9248
+typically uses a multi-byte block-read protocol with the FSB
+select bits at different offsets, and slave addresses are factory-
+strapped per variant rather than fixed at 0x69.
+
+**Impl observation:** Our `machdep/pegasos2/vt8231.c` exports
+`vt8231_w83194_fsb_hz()`, which probes SMBus slave 0x69 and reads
+register 0x03 against a Winbond table:
+
+```c
+#define W83194_SMBUS_ADDR   0x69u
+#define W83194_REG_FSB_CFG  0x03u
+static const unsigned fsb_table[8] = {
+    66666667u, 75000000u, 83000000u, 100000000u,
+   120000000u, 133000000u, 150000000u, 166666667u
+};
+```
+
+On QEMU the SMBus controller has no slave devices attached, so
+`vt8231_smbus_probe` returns no-ack and we fall through to
+`PEGASOS2_FSB_HZ_DEFAULT` (133 MHz). The visible behaviour on
+QEMU is therefore identical to "no probe" -- the Winbond/ICS9248
+mismatch is invisible there.
+
+On real hardware the probe would talk to whatever device answers
+slave-address 0x69 (which may be the ICS9248-151, or may be no
+device, depending on the part's strap configuration). If it does
+ack, the byte read from "register 0x03" would be interpreted
+against the wrong table and could yield a wildly incorrect FSB
+guess, which would in turn corrupt every downstream timer
+calibration (decrementer, busclk, MV64361 SDRAM refresh, VT8231
+PIT) that consumes the result. The current code path is
+load-bearing on real hardware in a way it isn't on QEMU.
+
+**Suggested resolution:** Either
+
+1. Rename `vt8231_w83194_fsb_hz` -> `vt8231_clockgen_fsb_hz`,
+   replace the Winbond register layout with the ICS9248-151 byte
+   protocol per its public datasheet, and update spec 00 / spec
+   05 to identify the chip correctly; or
+
+2. If it turns out a later board revision swapped the chip,
+   document both cases and probe at runtime by reading the SMBus
+   manufacturer ID before deciding which decoder table to use.
+
+Until this is resolved the safe path is to treat the SMBus probe
+as advisory only and keep `PEGASOS2_FSB_HZ_DEFAULT` as the
+authoritative source -- which is already what every QEMU run
+does, but the comments in `vt8231.c` should reflect that the
+real-HW probe is unverified rather than implying it is correct.
+
+---
+
+## Q9. Hardware blocks present on the board but absent from docs
+
+**Spec claim:** `docs/00-overview.md` enumerates the chip
+inventory used by the firmware. The list covers MPC7447A,
+MV64361, VT8231, AMD Am29F040B flash, and the (now-disputed)
+M48T59 / W83194.
+
+**Observed:** The Pegasos II beta-5 schematic
+(`references/Pegasos_2b5.pdf`) shows several additional on-board
+devices that the spec does not enumerate:
+
+  - **VT6306** -- VIA IEEE-1394a (FireWire) OHCI controller, on a
+    dedicated PCI lane. Has its own sheet in the schematic.
+  - **Marvell 88E1111** -- Gigabit Ethernet PHY wired to MV64361's
+    primary GbE MAC.
+  - **Realtek RTL8201** -- 10/100 Ethernet PHY wired to MV64361's
+    secondary MAC. (Pegasos II thus has two Ethernet ports.)
+  - **VT8231 sub-blocks** for floppy disk (FDD), parallel port
+    (PAR), IrDA (IRDA), PS/2 keyboard/mouse (KBMS), serial (SER),
+    game port (GAME), USB, and onboard power management (POWER).
+    Some of these are referenced by spec 04 only obliquely.
+
+**Impl observation:** None of these is on our roadmap for v0.5 --
+the firmware does not enumerate FireWire, does not configure
+either Ethernet PHY, and does not expose floppy / parallel / IrDA
+/ game-port to the OS. They appear in the schematic as items the
+target OS (AOS4 / MorphOS / Linux) is expected to drive itself
+once it has been handed control. On QEMU only a subset of these
+is modelled, so even an attempt to bring them up would be hard
+to validate.
+
+**Suggested resolution:** Spec 00's chip inventory could mention
+these blocks for completeness even if they remain explicitly
+out-of-scope for the firmware. The `roadmap` sections in
+`README.md` and `FEATURES.md` already list "network boot",
+"floppy boot", and "AC'97 audio init" as future items; an entry
+for "FireWire bring-up (VT6306)" would be consistent. No code
+change is implied by this question -- it is purely a
+documentation-completeness note tied to the schematic now stored
+in `references/`.
