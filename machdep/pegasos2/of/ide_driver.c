@@ -53,6 +53,7 @@
 #include "mv64361.h"
 #include "pegasos2.h"
 #include "uart16550.h"
+#include "ide_dma.h"
 
 /*
  * PCI I/O window base for host 1 (VT8231 bus). PCI I/O addresses
@@ -429,6 +430,11 @@ CC(install_ide_driver)
 	}
 	if (found == 0)
 		uart_puts(UART1_BASE, "IDE devices: none attached\n");
+
+	/* M5: enable bus-master DMA on every ATA child. ATAPI keeps
+	 * the upstream PIO method (DMA-aware ATAPI is more involved
+	 * and isn't on the v0.6 plan). */
+	(void)ide_dma_install(e, ide);
 
 	return pret;
 }
