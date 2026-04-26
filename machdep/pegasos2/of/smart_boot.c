@@ -159,12 +159,67 @@ loader_amigaos(Environ *e, Package *part)
 	return interp_text(e, (Byte *)cmd, strlen(cmd));
 }
 
+/*
+ * Try to load a Linux kernel from a specific HD partition. The
+ * existing IEEE-1275 client-program handoff (machine_jump_os.S
+ * + the spec-07 register convention -- r5 = ci_handler, MMU on,
+ * BATs covering DRAM + MV64361) is exactly what OF-aware Linux
+ * PPC kernels expect at entry: the kernel's OF trampoline
+ * (CONFIG_PPC_OF_BOOT_TRAMPOLINE in upstream Linux) detects a
+ * non-zero r5, calls back into our CI handler to read the device
+ * tree + bootargs + memory map, then quiesces and jumps into
+ * mainline kernel init.
+ *
+ * Caveats:
+ *   - vmlinux only (raw ELF). zImage / vmlinuz are compressed
+ *     wrappers that need their own decompression stage; that's
+ *     what yaboot was for. A proper yaboot replacement is on
+ *     the M4-extension list, not v0.6.
+ *   - No initrd. Set boot-args via setenv if the kernel's root=
+ *     wants something specific. Adding initrd loading would
+ *     require a second `boot` against the initrd file plus
+ *     /chosen/linux,initrd-{start,end} property setup; deferred.
+ *   - LBA-28 disks only on the DMA path (the M5 caveat).
+ *
+ * Strategy: we don't know which file the user has, so try the
+ * most common kernel filenames in priority order. SF returns a
+ * non-NO_ERROR retcode if a file isn't found and we move on.
+ * The first hit transfers control and never returns; failures
+ * propagate so smart-boot can move to the next family.
+ */
 static Retcode
 loader_linux(Environ *e, Package *part)
 {
-	(void)part;
-	cprintf(e, "smart-boot: Linux loader not implemented yet "
-	        "(future: yaboot-style kernel + initrd from /boot)\n");
+	cprintf(e, "smart-boot: trying Linux bootstrap from HD\n");
+
+	Int part_idx = 0;
+	if (prop_get_int(part->props, (Byte *)"reg", CSTR,
+	                 &part_idx) != NO_ERROR)
+		part_idx = 1;     /* SF default partition slot */
+
+	/*
+	 * Format `boot hd:<N> <path>` where <N> is the RDB partition
+	 * index (0-based; SF's disklabel package adds 1 for its
+	 * 1-based external numbering). For Linux installs this
+	 * partition holds the root or /boot filesystem.
+	 */
+	static const char *paths[] = {
+		"/boot/vmlinux",
+		"/vmlinux",
+		"/boot/vmlinuz",       /* compressed; will fail unless wrapper-aware */
+		"/yaboot",
+		NULL
+	};
+
+	for (int i = 0; paths[i] != NULL; i++) {
+		Byte cmd[96];
+		bprintf((char *)cmd, "boot hd:%d %s",
+		        (int)part_idx, paths[i]);
+		int n = (int)strlen((char *)cmd);
+		Retcode r = interp_text(e, cmd, n);
+		if (r == NO_ERROR)
+			return NO_ERROR;        /* unreachable on success */
+	}
 	return E_UNSUPPORTED_FILESYS;
 }
 
