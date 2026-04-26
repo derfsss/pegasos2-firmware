@@ -351,12 +351,15 @@ nextprop_done:
 		for (uInt i = 0; i < nargs && i < 6; i++) {
 			uInt v = (uInt)a[3 + i];
 			cprintf(g_e, " a%d=0x%X", (int)i, (unsigned)v);
-			/* If arg looks like a pointer into amigaboot's
-			 * text/data (0x00200000..0x00400000), try to
-			 * print as a NUL-terminated ASCII string. */
-			if (v >= 0x00200000u && v < 0x00400000u) {
+			/* If arg looks like a pointer into low DRAM
+			 * (where AOS amigaboot, MorphOS Quark, and Linux
+			 * boot wrappers all keep their string tables) try
+			 * to print as a NUL-terminated ASCII string. */
+			if ((v >= 0x00200000u && v < 0x10000000u) ||
+			    (v >= 0xC0000000u && v < 0xD8000000u) ||
+			    (v >= 0xD8000000u && v < 0xE0000000u)) {
 				const uByte *p = (const uByte *)(uPtr)v;
-				char strbuf[32];
+				char strbuf[64];
 				int j = 0;
 				while (j < (int)sizeof(strbuf) - 1 &&
 				       p[j] >= 0x20 && p[j] < 0x7Fu)

@@ -361,6 +361,7 @@ const Initentry *init_list[] = {
  */
 EC(install_root);
 EC(install_root_cells);
+EC(install_rtas);
 EC(install_chosen);
 EC(install_memory);
 EC(init_options_from_nvram);
@@ -379,6 +380,7 @@ EC(install_pegasos2_ci_services);
 const Command install_list[] = {
 	install_root,
 	install_root_cells,
+	install_rtas,
 	install_chosen,
 	install_memory,
 	init_options_from_nvram,

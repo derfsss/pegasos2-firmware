@@ -325,7 +325,8 @@ OF_MACHDEP_OBJS := \
     $(BUILD)/of_amiga_sfs.o \
     $(BUILD)/of_amiga_pfs3.o \
     $(BUILD)/of_fs_exfat.o \
-    $(BUILD)/of_iso9660_compat.o
+    $(BUILD)/of_iso9660_compat.o \
+    $(BUILD)/of_rtas.o
 
 $(BUILD)/of_platform.o: $(SF_MACHDEP)/platform.c | $(BUILD)
 	$(CC) $(SF_CFLAGS) -I$(MACHDEP) -I$(SF)/fs -c $< -o $@
@@ -411,6 +412,12 @@ $(BUILD)/of_fs_exfat.o: $(SF_MACHDEP)/fs_exfat.c | $(BUILD)
 # in the g_filesys[] dispatch list.
 $(BUILD)/of_iso9660_compat.o: $(SF_MACHDEP)/iso9660_compat.c | $(BUILD)
 	$(CC) $(SF_CFLAGS) -I$(SF)/fs -c $< -o $@
+
+# CHRP /rtas stub. Hand-encoded hypercall trampoline + properties
+# for OSes that finddevice("/rtas") at boot (MorphOS Quark; Linux
+# CHRP wrappers; *BSD PowerPC kernels).
+$(BUILD)/of_rtas.o: $(SF_MACHDEP)/rtas.c | $(BUILD)
+	$(CC) $(SF_CFLAGS) -c $< -o $@
 
 # Append OF to the firmware link target. phase1_c_main() calls SF's
 # main() directly; without these objects the link would fail.
