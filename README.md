@@ -2,8 +2,8 @@
 
 A clean-room reimplementation of the BIOS / OpenFirmware-style boot
 ROM for the **Pegasos II** PowerPC motherboard. It boots **AmigaOS 4**,
-is ready to extend to **MorphOS** and **Linux**, and runs on both real
-hardware and the QEMU `pegasos2` machine.
+is ready to extend to **MorphOS** and **Linux**, and runs on the QEMU 
+`pegasos2` machine with real hardware to follow.
 
 The original firmware (bPlan/CodeGen SmartFirmware 1.2, 2004) is
 nineteen years out of date and has known defects with modern PCI
