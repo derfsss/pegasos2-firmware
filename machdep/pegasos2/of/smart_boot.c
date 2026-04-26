@@ -273,11 +273,22 @@ loader_amigaos_cd(Environ *e)
 	return try_cd_boot(e, "amigaboot.of");
 }
 
+static Retcode loader_linux_cd_chrp(Environ *e);
+
 static Retcode
 loader_linux_cd(Environ *e)
 {
 	cprintf(e, "smart-boot: trying Linux bootstrap from CD\n");
 	Retcode r;
+	/* Debian-PPC convention first: vmlinuz-chrp.initrd via the
+	 * load+set-bootargs+go trio that delivers a working serial
+	 * console to the kernel. Tested against
+	 * debian-8.11.0-powerpc-netinst.iso. */
+	if ((r = loader_linux_cd_chrp(e))            == NO_ERROR) return r;
+	/* Generic fallbacks for live-CDs that ship a plain ELF kernel
+	 * at the volume root. These were the M4 scaffold's original
+	 * paths; kept so a custom Linux CD with a bare vmlinux at
+	 * /boot/vmlinux still has a chance of booting. */
 	if ((r = try_cd_boot(e, "boot/vmlinux"))     == NO_ERROR) return r;
 	if ((r = try_cd_boot(e, "vmlinux"))          == NO_ERROR) return r;
 	if ((r = try_cd_boot(e, "yaboot"))           == NO_ERROR) return r;
@@ -289,6 +300,45 @@ loader_morphos_cd(Environ *e)
 {
 	cprintf(e, "smart-boot: trying MorphOS bootstrap from CD\n");
 	return try_cd_boot(e, "boot.img");
+}
+
+/*
+ * Linux CD-boot using the Debian/CHRP install convention (matches
+ * the /install/pegasos $boot Forth wrapper Debian ships). Loads
+ * /install/powerpc/vmlinuz-chrp.initrd from the CD, then
+ * publishes a Linux-friendly kernel cmdline on /chosen/bootargs
+ * (SF's do_load overwrites it with the literal boot-command args
+ * field, which would have left the kernel with no `console=` and
+ * silent boot), then jumps to the entry via `go`.
+ *
+ * Uses the `cd:0` partition syntax (whole-disk slice) so the
+ * dos-partition reader, which activates on the hybrid Apple
+ * Partition Map Debian's PPC ISO ships, doesn't interpret
+ * /install/... as a partition name.
+ */
+extern Retcode f_set_bootargs(Environ *e);
+
+static Retcode
+loader_linux_cd_chrp(Environ *e)
+{
+	cprintf(e, "smart-boot: trying Debian CHRP wrapper from CD\n");
+
+	const char *load_cmd =
+	    "load cd:0 /install/powerpc/vmlinuz-chrp.initrd";
+	Retcode r = interp_text(e, (Byte *)load_cmd,
+	                        (Int)strlen(load_cmd));
+	if (r != NO_ERROR)
+		return r;
+
+	static const char cmdline[] = "console=ttyS0,9600";
+	PUSHP(e, (Byte *)cmdline);
+	PUSH(e, (Cell)(sizeof cmdline - 1));
+	r = f_set_bootargs(e);
+	if (r != NO_ERROR)
+		return r;
+
+	const char *go_cmd = "go";
+	return interp_text(e, (Byte *)go_cmd, (Int)strlen(go_cmd));
 }
 
 /* --- Forth entry point ----------------------------------------- */

@@ -343,6 +343,7 @@ const Initentry *init_list[] = {
  *    Must run after install_client_services.
  */
 EC(install_root);
+EC(install_root_cells);
 EC(install_chosen);
 EC(install_memory);
 EC(init_options_from_nvram);
@@ -360,6 +361,7 @@ EC(install_pegasos2_ci_services);
 
 const Command install_list[] = {
 	install_root,
+	install_root_cells,
 	install_chosen,
 	install_memory,
 	init_options_from_nvram,

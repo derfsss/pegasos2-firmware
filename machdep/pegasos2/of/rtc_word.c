@@ -96,6 +96,75 @@ static const Initentry init_pegasos2_ci[] = {
 	{ NULL, NULL, INVALID_FCODE, F_NONE, T_FUNC HELP("") }
 };
 
+/*
+ * Replacement claim service: the upstream f_client_claim splits a
+ * claim() call into a /memory/claim (allocate phys), a /mmu/claim
+ * (allocate virt), and an /mmu/map (link them). On real-mode
+ * Pegasos II hardware (translation off, virt == phys, no real MMU
+ * to track) this is double work, and the upstream /mmu/claim path
+ * has a stack mismatch with /mmu/map (claim pushes 4 args, map
+ * pops cells+3 = 5 for cells=2) that yields virt=0 even when the
+ * underlying physical allocation succeeded. The visible symptom:
+ * Linux's CHRP boot wrapper prints `claim ... got 0` and aborts
+ * with "Can't allocate memory for kernel image", even though
+ * 0x400000+9MiB is comfortably inside our /memory/available.
+ *
+ * The fix: bypass the /mmu dance entirely. /memory/claim on its
+ * own correctly honours both fixed-address (align==0) and any-
+ * address (align!=0) claims, returns the allocated phys address,
+ * and that's exactly what the OF client expects to see -- on
+ * real-mode firmware, claim's "virtual address" is the physical
+ * address. AOS4 amigaboot.of also benefits: its align==0 calls
+ * went through the upstream path and "worked" only because the
+ * uninitialised /mmu g_free_list left reqaddr unchanged on no-
+ * match; that's an accident, not correctness.
+ */
+extern Retcode execute_method_name(Environ *e, Instance *inst,
+                                   Byte *name, Int len);
+
+static Retcode
+f_pegasos2_claim(Environ *e)
+{
+	Cell virt, size, align;
+	Int inst;
+
+	IFCKSP(e, 3, 4);
+	POP(e, virt);
+	POP(e, size);
+	POP(e, align);
+
+	if (prop_get_int(e->chosen->props,
+	                 (Byte *)"memory", CSTR, &inst) != NO_ERROR ||
+	    inst == 0) {
+		PUSH(e, 0);
+		return E_NULL_INSTANCE;
+	}
+
+	/*
+	 * Push the args /memory/claim expects. Its stack signature:
+	 *   align == 0 : (phys.lo ... phys.hi size align -- base)
+	 *   align != 0 : (size align -- base)
+	 * For 32-bit phys (cells=1) the only phys cell is virt.
+	 */
+	if (align == 0)
+		PUSH(e, virt);
+	PUSH(e, size);
+	PUSH(e, align);
+
+	Retcode ret = execute_method_name(e, (Instance *)(uPtr)inst,
+	                                  (Byte *)"claim", CSTR);
+	if (ret != NO_ERROR) {
+		PUSH(e, 0);
+		return ret;
+	}
+
+	/*
+	 * /memory/claim's result (the allocated base address) is on
+	 * the top of the stack; that's our return value, leave it.
+	 */
+	return NO_ERROR;
+}
+
 CC(install_pegasos2_ci_services)
 {
 	if (e->client == NULL || e->client->dict == NULL)
@@ -113,5 +182,20 @@ CC(install_pegasos2_ci_services)
 		             (Byte *)"serial debuglevel=1", CSTR);
 	}
 
-	return init_entries(e, e->client->dict, init_pegasos2_ci);
+	Retcode r = init_entries(e, e->client->dict, init_pegasos2_ci);
+	if (r != NO_ERROR)
+		return r;
+
+	/* Override the existing "claim" method registered by upstream
+	 * install_client_services. find_table on the dict's entry
+	 * table returns the live Initentry-derived Entry; rewriting
+	 * its v.cfunc pointer redirects every future CI dispatch of
+	 * "claim" to our handler. Same trick M5 uses to swap
+	 * read-blocks on disk@ children. */
+	Entry *ent = find_table(e->client->dict,
+	                        (Byte *)"claim", CSTR);
+	if (ent != NULL)
+		ent->v.cfunc = f_pegasos2_claim;
+
+	return NO_ERROR;
 }

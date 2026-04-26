@@ -848,20 +848,30 @@ static Package *create_pci_host_package(Environ *e, const char *genus,
  *       (no 8259-interrupt-acknowledge; only PCI_HOST_1 cascades
  *        through the VT8231 i8259.)
  */
-CC(install_pci_tree)
+/*
+ * Set the root node's #address-cells / #size-cells to the CHRP
+ * pegasos2 convention (1 each) BEFORE install_memory runs. SF's
+ * install_root defaults them to 2 (per get_address_cells()'s
+ * DEFAULT_*_CELLS); install_memory reads them when encoding
+ * /memory/reg, so if we leave them at 2 the reg blob is 3 cells
+ * per entry (2 address + 1 size, 12 bytes) -- but Linux's PPC32
+ * boot wrapper reads /memory/reg expecting 1+1 (8 bytes), so it
+ * sees address=our_base_low_cell, size=our_base_high_cell=0.
+ * That gave the wrapper ram_top=0x200000 size=0 and a "Can't
+ * allocate initial device-tree chunk" abort.
+ *
+ * Wired into install_list[] BEFORE install_memory so the cells
+ * are set when /memory/reg gets encoded.
+ */
+CC(install_root_cells)
 {
-	/*
-	 * Overwrite root's #address-cells and #size-cells with the
-	 * CHRP pegasos2 convention (1 cell each). SF's install_root
-	 * leaves them at DEFAULT_*_CELLS (2) unless ROOT_ADDRESS_CELLS
-	 * is defined in machdep.h, but defining that macro pulls in a
-	 * dozen MMU hooks we don't implement -- set the props directly
-	 * here instead. Must run before we build /pci@* children so
-	 * their `ranges` property (which encodes parent #address-cells
-	 * cells per entry) is interpreted correctly by clients.
-	 */
 	prop_set_int(e->root->props, (Byte *)"#address-cells", CSTR, 1);
 	prop_set_int(e->root->props, (Byte *)"#size-cells",    CSTR, 1);
+	return NO_ERROR;
+}
+
+CC(install_pci_tree)
+{
 
 	/* Both bus packages use name="pci"; the `reg` property provides
 	 * the unit-addr ("80000000" vs "c0000000") that disambiguates
