@@ -183,7 +183,14 @@ Press any key during the countdown:
   Forth word, every NVRAM variable, every build flag, debugging
   hooks, filesystem support, limitations).
 - **[BOOT.md](BOOT.md)** — internal documentation of the boot path
-  (reset → OS entry), for anyone hacking on the firmware itself.
+  (reset → OS entry), with diagrams of the flow + memory map +
+  device tree.
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — how to send patches +
+  bug reports; coding style; commit conventions; clean-room
+  policy.
+- **[HACKING.md](HACKING.md)** — tutorials for adding a new Forth
+  word, filesystem reader, or OS loader, plus a walkthrough of
+  the existing FS-reader pattern.
 - **[PROGRESS.md](PROGRESS.md)** — running implementation log /
   bring-up history; what's done, what's next.
 - **[docs/](docs/)** — the original specification this firmware

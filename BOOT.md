@@ -4,6 +4,175 @@ Internal documentation of the boot path from reset to OS entry.
 Companion to `docs/05-of-runtime.md` (the spec author's high-level
 description) and `docs/07-boot-loader.md` (the spec for OS handoff).
 
+## End-to-end flow
+
+```
+              ┌──────────────────────────────────────┐
+              │  Power-on / reset                    │
+              └────────────────┬─────────────────────┘
+                               │
+              ┌────────────────▼─────────────────────┐
+              │  reset.S                             │
+              │   - clear MSR[IP]                    │
+              │   - program 4 DRAM BATs (0..1 GiB)   │
+              │   - copy vectors to 0x100..0x1300    │
+              │   - jump phase1_c_main               │
+              └────────────────┬─────────────────────┘
+                               │
+              ┌────────────────▼─────────────────────┐
+              │  Phase 1 (machdep/pegasos2/phase1.c) │
+              │   - MV64361 PCI0 IO window enable    │
+              │   - VT8231 SuperIO + UART1 init      │
+              │   - PCI tree enum (BARs assigned)    │
+              │   - x86emu self-test                 │
+              │   - bochs-VGA option-ROM POST        │
+              │   - W83194 FSB / time-base calibrate │
+              │   - decrementer + syscall self-test  │
+              └────────────────┬─────────────────────┘
+                               │
+              ┌────────────────▼─────────────────────┐
+              │  Phase 2 (SmartFirmware main())      │
+              │   - run install_list[] hooks         │
+              │     -> /, /chosen, /memory, /options │
+              │     -> /cpus, /pci@*, /aliases       │
+              │     -> /pci@.../ide@C,1/disk@0,0     │
+              │     -> ...partition packages         │
+              │   - init_pegasos2[] Forth words      │
+              │   - read NVRAM (M48T59 / defaults)   │
+              │   - print SmartFirmware banner       │
+              └────────────────┬─────────────────────┘
+                               │
+              ┌────────────────▼─────────────────────┐
+              │  auto-boot? = true  ─────────────────┐
+              │  no key during countdown             │
+              └────────────────┬─────────────────────┘
+                               │
+              ┌────────────────▼─────────────────────┐
+              │  smart-boot (smart_boot.c)           │
+              │   - read boot-os-priority NVRAM      │
+              │   - walk RDB partitions              │
+              │   - classify each by DosType:        │
+              │       amigaos / linux / morphos      │
+              │   - dispatch to first matching loader│
+              └────────────────┬─────────────────────┘
+                               │
+                  ┌────────────┴────────────┐
+                  │                         │
+       ┌──────────▼─────────┐    ┌──────────▼──────────┐
+       │ amigaos:           │    │ linux / morphos:    │
+       │  boot hd:N         │    │   not yet wired     │
+       │       amigaboot.of │    │   smart-boot falls  │
+       │  via SF's f_boot,  │    │   through to next   │
+       │  exec_load,        │    │   priority entry    │
+       │  machine_jump_os   │    │                     │
+       └──────────┬─────────┘    └─────────────────────┘
+                  │
+       ┌──────────▼─────────────────────────────────────┐
+       │  machine_jump_os (boot_kernel.S)               │
+       │   - program user BATs (DRAM + MV64361/flash)   │
+       │   - set MSR[IR|DR|RI], clear MSR[EE]           │
+       │   - r1 = stack, r3 = 0xCAFE0000, r5 = ci_handler│
+       │   - bctr to e->entrypoint                      │
+       └──────────┬─────────────────────────────────────┘
+                  │
+       ┌──────────▼─────────────────────────────────────┐
+       │  amigaboot.of (Hyperion property; not in repo) │
+       │   - device-tree walk via CI                    │
+       │   - parse RDB on each block device             │
+       │   - mount partition's FS                       │
+       │   - read /Kicklayout                           │
+       │   - load Kickstart modules                     │
+       │   - jump exec.kernel                           │
+       └────────────────────────────────────────────────┘
+```
+
+## Memory map at OS handoff (QEMU `-m 1024`)
+
+```
+  Address       Region                              Owner / lifetime
+  ───────────   ─────────────────────────────────   ────────────────
+  0x00000000    Exception vectors (256 bytes/each)  firmware (permanent)
+       ...      0x100=DSI 0x500=ExtInt 0x700=Prog
+                0x800=FP-Unavail 0x900=Decr ...
+                0x1300=last vector
+  0x00001400    free DRAM
+       ...
+  0x00100000    firmware C stack (grows down to     firmware
+                 ~0x000FFFC0; 64 KiB headroom)
+  0x00200000    OS-loadable region  ┐               OS / boot-loader
+       ...                          │ machine_init_load
+  0x003FFFFF                        │ default e->load
+                                    ┘
+  0x00400000    boot-loader buffer (default for     OS / boot-loader
+                 SF's `load`/`go`; amigaboot.of
+                 PT_LOAD lands here)
+       ...
+  0x01000000    x86emu real-mode memory buffer      firmware
+       ...      (option-ROM execution sandbox)
+  0x010FFFFF
+  0x01100000    SF malloc pool                      firmware
+       ...      (2 MiB; package nodes,
+  0x012FFFFF    allocated properties, etc.)
+  0x01300000    free DRAM                           OS / boot-loader
+       ...
+  0x2CFE0000    amigaboot.of's claimed working      amigaboot
+       ...      memory (32 MiB; per-disk records,
+  0x2EFDFFFF    file-load buffers, FS state)
+  0x2EFE0000    free DRAM
+       ...
+  0x2F000000    amigaboot.of's claim for kernel     amigaboot
+       ...      modules (1 MiB; bootimage etc.)
+  0x2F0FFFFF
+  0x2F100000    free DRAM
+       ...      (DRAM extends to wherever the DRAM
+                 probe in machine_initialize found
+                 the actual end -- 0x40000000 on
+                 -m 1024, 0x20000000 on -m 512)
+  ───────────
+  0xF0000000    MV64361 register window             memory-mapped IO
+       ...
+  0xFE000000    VT8231 PCI I/O window
+       ...      (0xFE0003F8 = UART1 etc.)
+  0xFFF00000    Flash ROM image (firmware-raw.bin)  read-only
+       ...
+  0xFFFFFFFF    reset vector at 0xFFFFFFFC
+```
+
+## Device-tree shape post-install_list
+
+```
+  /                                           (root, "bPlan-CodeGen,Pegasos2")
+  ├── chosen                                  /chosen/bootpath, /chosen/bootargs
+  ├── memory                                  reg = <available DRAM extents>
+  ├── options                                 NVRAM env vars (auto-boot?, ...)
+  ├── packages
+  │   ├── deblocker                           SF block-cache layer
+  │   ├── disk-label                          partition + load orchestrator
+  │   └── client-services                     CI dispatch table
+  │       └── (get-time-of-day, ...)          pegasos2 extensions
+  ├── aliases                                 hd, cd, disk, cdrom
+  ├── cpus
+  │   └── PowerPC,7447A@0                     PVR, clock, cache info
+  ├── failsafe                                always-on UART1 console
+  ├── display                                 SM501 framebuffer (when present)
+  ├── pci@80000000                            VT8231 primary bus
+  │   ├── host                                MV64361 host bridge
+  │   ├── display                             bochs-VGA (or sm501)
+  │   ├── isa                                 VT8231 fn0
+  │   ├── ide@C,1                             VT8231 fn1 (IDE)
+  │   │   ├── disk@0,0                        primary master HD
+  │   │   │   └── DH0 (or other partition)    install_partition_packages
+  │   │   │       (dostype=DOS\7, boot-priority=0,
+  │   │   │        block-size=512, #blocks=...)
+  │   │   └── cd@1,0                          secondary master CD-ROM
+  │   ├── usb@C,2 / usb@C,3                   VT8231 fn2/fn3 (UHCI)
+  │   ├── other@C,4                           VT8231 fn4 (RTC area)
+  │   ├── sound@C,5                           VT8231 fn5 (AC'97)
+  │   └── ...                                 VT8231 fn6 (SMBus)
+  └── pci@c0000000                            secondary expansion bus
+      └── ...                                 anything plugged in
+```
+
 ## Reset → Phase 1 (firmware init)
 
 `reset.S` brings the CPU up: clears MSR[IP], programs the four DRAM
