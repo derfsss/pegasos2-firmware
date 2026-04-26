@@ -52,6 +52,7 @@
 #include "io.h"
 #include "mv64361.h"
 #include "pegasos2.h"
+#include "uart16550.h"
 
 /*
  * PCI I/O window base for host 1 (VT8231 bus). PCI I/O addresses
@@ -368,8 +369,68 @@ CC(install_ide_driver)
 	reg[2] = read_io_bar(host, bus, dev, fn, 0x18, 0x170u);  /* BAR2 or 0x170 */
 	reg[3] = read_io_bar(host, bus, dev, fn, 0x1C, 0x376u);  /* BAR3 or 0x376 */
 
-	return probe_ata_disks(e, reg, ide,
-			       pegasos2_ide_io_read, pegasos2_ide_io_write);
+	/*
+	 * probe_ata_disks (upstream/.../atadisk.c:1222) walks all four
+	 * slots: (channel 0, master), (channel 0, slave), and -- when
+	 * reg[2] is non-zero, which our BAR-fallback always makes true
+	 * -- (channel 1, master), (channel 1, slave). Each responding
+	 * slot gets a disk@CTL,ID or cd@CTL,ID child node attached to
+	 * `ide`. Slots that don't respond are silently skipped.
+	 */
+	Retcode pret = probe_ata_disks(e, reg, ide,
+	                               pegasos2_ide_io_read,
+	                               pegasos2_ide_io_write);
+
+	/*
+	 * Print the resulting drive inventory so users can see at a
+	 * glance what the firmware decided was attached. Especially
+	 * useful for multi-drive configs where smart-boot's pick may
+	 * not be the user's expectation.
+	 */
+	/*
+	 * Push a one-line per-device summary to UART1 directly. We
+	 * can't go via cprintf here: install_packages runs before SF
+	 * opens the output console (e->screen == NULL until
+	 * `install-console` later in main()), and although display_text
+	 * does fall back to failsafe_write in that state, the SF
+	 * paginator hooks (e->paginate / e->debug) and capture buffer
+	 * race with the early install ordering and silently drop the
+	 * output on QEMU. Going straight to UART1 sidesteps the lot --
+	 * users see the inventory regardless of console state.
+	 */
+	int found = 0;
+	for (Package *c = ide->children; c != NULL; c = c->link) {
+		Byte *nm; Int nl;
+		if (prop_get_str(c->props, (Byte *)"name", CSTR,
+		                 &nm, &nl) != NO_ERROR)
+			continue;
+		Int ctlr = -1, id = -1;
+		Entry *re = find_table(c->props, (Byte *)"reg", CSTR);
+		if (re != NULL && re->len >= 2 * (Int)sizeof(Int)) {
+			Byte *r = (Byte *)re->v.array;
+			ctlr = ((Int)r[0] << 24) | ((Int)r[1] << 16) |
+			       ((Int)r[2] << 8)  |  (Int)r[3];
+			id   = ((Int)r[4] << 24) | ((Int)r[5] << 16) |
+			       ((Int)r[6] << 8)  |  (Int)r[7];
+		}
+		Int is_atapi =
+			(find_table(c->props, (Byte *)"atapi", CSTR) != NULL);
+		if (found == 0)
+			uart_puts(UART1_BASE, "IDE devices found:\n");
+		uart_puts(UART1_BASE, "  ");
+		for (Int j = 0; j < nl; j++)
+			uart_putc(UART1_BASE, (char)nm[j]);
+		uart_putc(UART1_BASE, '@');
+		uart_put_hex32(UART1_BASE, (uint32_t)ctlr);
+		uart_putc(UART1_BASE, ',');
+		uart_put_hex32(UART1_BASE, (uint32_t)id);
+		uart_puts(UART1_BASE, is_atapi ? "  (ATAPI)\n" : "  (ATA)\n");
+		found++;
+	}
+	if (found == 0)
+		uart_puts(UART1_BASE, "IDE devices: none attached\n");
+
+	return pret;
 }
 
 /* ---------- test-ide-probe Forth word ---------- */

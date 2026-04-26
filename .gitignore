@@ -24,3 +24,4 @@ test/*.log
 # CONTRIBUTING.md test plan). Never bundled.
 hd1.raw
 hd0.qcow2
+hd2.raw
