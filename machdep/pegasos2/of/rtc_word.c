@@ -8,7 +8,9 @@
  *
  *  Real-time-clock Forth words and the matching IEEE-1275 CI
  *  service registration. Both word and service read/write the
- *  M48T59 NVRAM/RTC chip at the spec 08 §RTC offsets.
+ *  VT8231 internal RTC (the schematic-confirmed Pegasos II
+ *  time-of-day source -- there is no separate M48T59 chip on the
+ *  board; SPEC-QUESTIONS.md Q7 records the audit).
  *
  *  Also handles install_pegasos2_ci_services -- a post-
  *  install_client_services hook that adds the pegasos2-specific
@@ -19,28 +21,28 @@
 
 #include "defs.h"
 
-extern int m48t59_read_rtc(int *year, int *month, int *day,
+extern int vt8231_rtc_read(int *year, int *month, int *day,
                            int *hour, int *minute, int *second);
-extern int m48t59_write_rtc(int year, int month, int day,
+extern int vt8231_rtc_write(int year, int month, int day,
                             int hour, int minute, int second);
 
 /*
  * get-time-of-day ( -- second minute hour day month year )
  *
- * Spec 06 §"Time of day" CI service. Reads the M48T59 RTC and
- * pushes six integers: second/minute/hour/day/month/year (year
- * is the full 4-digit value, e.g. 2026). If the chip is absent
- * (QEMU pegasos2 -- no M48T59 model) we push an epoch-like
- * fallback (1970-01-01 00:00:00). An OS that expects this CI
- * service will still receive well-formed values; it can detect
- * the fallback by recognising the epoch.
+ * Spec 06 §"Time of day" CI service. Reads the VT8231 internal
+ * RTC and pushes six integers: second/minute/hour/day/month/year
+ * (year is the full 4-digit value, e.g. 2026). If the chip is
+ * absent or its battery has never been initialised, we push an
+ * epoch-like fallback (1970-01-01 00:00:00). An OS that expects
+ * this CI service will still receive well-formed values; it can
+ * detect the fallback by recognising the epoch.
  */
 CC(f_get_time_of_day)
 {
 	int yr, mo, da, hr, mi, se;
-	if (m48t59_read_rtc(&yr, &mo, &da, &hr, &mi, &se) != 0) {
-		/* M48T59 not present -- fall back to a fixed epoch so
-		 * the CI contract stays predictable on QEMU. */
+	if (vt8231_rtc_read(&yr, &mo, &da, &hr, &mi, &se) != 0) {
+		/* RTC not responding -- fall back to a fixed epoch so
+		 * the CI contract stays predictable. */
 		yr = 1970; mo = 1; da = 1;
 		hr = 0; mi = 0; se = 0;
 	}
@@ -57,10 +59,10 @@ CC(f_get_time_of_day)
 /*
  * set-time-of-day ( second minute hour day month year -- )
  *
- * Writes a new wall clock to the M48T59 (if present). Silently
- * does nothing when the chip is absent; on QEMU this lets test
- * harnesses run without spurious errors from a platform
- * limitation rather than a bug in the caller.
+ * Writes a new wall clock to the VT8231 RTC (if present). Silently
+ * does nothing when the chip does not respond; that lets test
+ * harnesses run without spurious errors from a platform limitation
+ * rather than a bug in the caller.
  */
 CC(f_set_time_of_day)
 {
@@ -72,7 +74,7 @@ CC(f_set_time_of_day)
 	POP(e, hr);
 	POP(e, mi);
 	POP(e, se);
-	(void)m48t59_write_rtc((int)yr, (int)mo, (int)da,
+	(void)vt8231_rtc_write((int)yr, (int)mo, (int)da,
 	                       (int)hr, (int)mi, (int)se);
 	return NO_ERROR;
 }

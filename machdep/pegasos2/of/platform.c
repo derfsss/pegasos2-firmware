@@ -107,19 +107,22 @@ struct nvram_data {
 };
 
 /*
- * Real Pegasos II has battery-backed M48T59 NVRAM; user `setenv`
- * changes flow through SF's save_config -> set_nvram ->
- * machine_nvram_write (machdep.c) -> M48T59 system partition, and
+ * Real Pegasos II keeps OF env vars in the VT8231 RTC's 114-byte
+ * battery-backed CMOS area (CR2032-fed; SPEC-QUESTIONS.md Q7).
+ * User `setenv` changes flow through SF's save_config ->
+ * set_nvram -> machine_nvram_write (machdep.c) -> CMOS bytes, and
  * persist across reboots. So the HW defaults below are
  * pessimistic: auto-boot? = false so the user reaches the ok
  * prompt and can edit boot-command before turning auto-boot on.
  *
- * QEMU pegasos2 doesn't instantiate the M48T59, so
- * machine_nvram_read always returns "corrupt", load_nvram falls
- * back to these compile-time defaults on every boot, and any
- * setenv changes are lost on reset. So the QEMU defaults are
- * optimistic: auto-boot? = true with a 3-second countdown, since
- * that's the most useful turnkey behaviour for testing.
+ * QEMU pegasos2 models the same VT8231 RTC, so machine_nvram_read
+ * works during a single qemu run, but qemu does not by default
+ * persist the CMOS bytes across qemu invocations. Each fresh
+ * `qemu-system-ppc -M pegasos2 ...` therefore presents an empty
+ * CMOS bank, machine_nvram_read returns "corrupt", and load_nvram
+ * falls back to these compile-time defaults. So the QEMU defaults
+ * are optimistic: auto-boot? = true with a 3-second countdown,
+ * since that's the most useful turnkey behaviour for testing.
  */
 struct nvram_data g_nvram[] = {
 	{ "real-mode?",           "false"     },
@@ -274,9 +277,9 @@ static const Initentry init_pegasos2[] = {
 	{ (Byte *)"test-ci-boot", f_test_ci_boot, INVALID_FCODE, F_NONE, T_FUNC HELP(
 			"(addr len --)  invoke ci_handler(\"boot\", <bootspec>) from Forth") },
 	{ (Byte *)"get-time-of-day", f_get_time_of_day, INVALID_FCODE, F_NONE, T_FUNC HELP(
-			"( -- sec min hr day mo yr)  read M48T59 RTC (fallback 1970-01-01)") },
+			"( -- sec min hr day mo yr)  read VT8231 RTC (fallback 1970-01-01)") },
 	{ (Byte *)"set-time-of-day", f_set_time_of_day, INVALID_FCODE, F_NONE, T_FUNC HELP(
-			"(sec min hr day mo yr --)  write M48T59 RTC (noop if absent)") },
+			"(sec min hr day mo yr --)  write VT8231 RTC (noop if absent)") },
 	{ (Byte *)"smart-boot", f_smart_boot, INVALID_FCODE, F_NONE, T_FUNC HELP(
 			"(--)  walk RDB partitions; pick by `boot-os-priority` (amigaos,linux,morphos); dispatch to per-OS loader") },
 	{ NULL, NULL, INVALID_FCODE, F_NONE, T_FUNC HELP("") }

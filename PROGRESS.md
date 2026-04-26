@@ -3,6 +3,35 @@
 This file is the handoff document for the next impl-agent session.
 Read it after `CLAUDE.md` and `docs/START-HERE.md`.
 
+## Hardware-audit refactor (2026-04-26)
+
+Schematic-vs-code audit (against `references/Pegasos_2b5.pdf`)
+landed two corrections:
+
+- **VT8231 internal RTC replaces the never-existent M48T59
+  driver.** The Pegasos II beta-5 schematic shows no separate
+  NVRAM chip; wall-clock and 114 bytes of battery-backed CMOS
+  live inside the VT8231 southbridge (CR2032-fed). The old
+  `machdep/pegasos2/m48t59.{c,h}` was deleted and replaced by
+  `vt8231_rtc.{c,h}`, exposing the same byte-level + RTC API to
+  SF's `machine_nvram_*` and to `get-time-of-day` /
+  `set-time-of-day`. NVRAM size dropped 1 KiB → 114 bytes; SF
+  truncates oversized writes automatically. Q7 is resolved.
+
+- **W83194 SMBus FSB probe removed; renamed to neutral
+  `pegasos2_clockgen_fsb_hz`.** The actual chip is an
+  ICS9248-151 with an incompatible register layout; the prior
+  W83194 decoder would have corrupted FSB readings on real
+  hardware. The function now returns 0 unconditionally so
+  `timer_calibrate` falls back to `PEGASOS2_FSB_HZ_DEFAULT`
+  (133 MHz, the board strap). The SMBus host-side primitives
+  stay in place ready for a future ICS9248-151 decoder. Q8 is
+  resolved.
+
+Verified: three-test regression matrix is `0 0 1` as expected,
+AOS4 hd1.raw end-to-end smoke boots through ExecSG and into the
+kernel.
+
 ## One-line status (2026-04-25)
 
 OF Forth runtime bring-up is in progress as a multi-commit

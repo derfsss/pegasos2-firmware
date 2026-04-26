@@ -139,12 +139,21 @@ int vt8231_smbus_read_byte(unsigned smbus_io_base,
                            unsigned address, unsigned reg);
 
 /*
- * Read the W83194 clock generator's FSB configuration and return
- * the derived CPU bus frequency in Hz. W83194 is on SMBus at
- * address 0x69 on Pegasos II. Returns 0 when no reading is
- * possible (SMBus absent, bad checksum, or unrecognised PLL
- * setting) so the caller can fall back to board defaults.
+ * Read the on-board clock generator's FSB configuration and return
+ * the derived CPU bus frequency in Hz. The Pegasos II beta-5
+ * schematic (references/Pegasos_2b5.pdf, "Clock Generator" sheet)
+ * identifies this part as an ICS9248-151; an earlier draft of the
+ * docs called for a Winbond W83194 and the implementation reflected
+ * the W83194's register layout, but the chip on the board is the
+ * ICS part with a different programming interface
+ * (SPEC-QUESTIONS.md Q8).
+ *
+ * Until a verified ICS9248-151 register-decode is written and
+ * exercised against real hardware, this function does not attempt
+ * a probe and always returns 0 so the caller falls through to the
+ * board-default FSB. The smbus_probe / smbus_read_byte primitives
+ * above stay in place as building blocks for the future decoder.
  */
-unsigned vt8231_w83194_fsb_hz(void);
+unsigned pegasos2_clockgen_fsb_hz(void);
 
 #endif

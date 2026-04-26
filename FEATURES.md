@@ -161,9 +161,13 @@ via `/chosen/bootargs`).
 ## NVRAM variables
 
 Edit any of these from the `ok` prompt with `setenv NAME VALUE`
-and (on real hardware) `reset-all` to apply. On QEMU's
-`pegasos2` machine the M48T59 NVRAM is not modeled, so changes
-do not survive reset; defaults reload every boot.
+and (on real hardware) `reset-all` to apply. The store is the
+VT8231 southbridge's own 114-byte battery-backed CMOS RAM,
+backed by a CR2032 cell on the board (no separate NVRAM chip).
+On QEMU's `pegasos2` machine the same RTC is modelled but its
+CMOS bytes are NOT persisted across qemu invocations by default,
+so changes do not survive a fresh `qemu-system-ppc` start;
+defaults reload every boot.
 
 ### Boot policy
 
@@ -227,12 +231,16 @@ bring-up.
 | `test-iso-ls` | `(--)` | list the root directory of the first ATAPI ISO9660 volume |
 | `test-aliases` | `(--)` | print every entry under `/aliases` (cd, cdrom, hd, disk) |
 
-### Time / RTC (real hardware only — QEMU has no M48T59 model)
+### Time / RTC
 
 | word | stack effect | description |
 |------|-------------|-------------|
-| `get-time-of-day` | `( -- sec min hr day mo yr)` | read M48T59 RTC; falls back to 1970-01-01 if no chip |
-| `set-time-of-day` | `(sec min hr day mo yr --)` | write M48T59 RTC; no-op if no chip |
+| `get-time-of-day` | `( -- sec min hr day mo yr)` | read VT8231 RTC; falls back to 1970-01-01 if no chip responds |
+| `set-time-of-day` | `(sec min hr day mo yr --)` | write VT8231 RTC; no-op if no chip responds |
+
+The RTC is the VT8231 southbridge's built-in MC146818-compatible
+unit at ISA I/O 0x70/0x71, modelled by QEMU and present on real
+Pegasos II boards (CR2032-fed; SPEC-QUESTIONS.md Q7).
 
 (Both are also exposed as `/openprom/client-services` methods so
 the OS can read/set the wall clock through the CI.)
@@ -280,8 +288,8 @@ make EXTRA_CFLAGS='-DCI_TRACE=1'     # full CI call trace baked in
 
 Selects compile-time defaults for NVRAM. All other code paths
 are identical — runtime probing handles every hardware-present /
-hardware-absent split (M48T59, W83194 SMBus, SM501 framebuffer
-all degrade gracefully).
+hardware-absent split (VT8231 RTC CMOS persistence, ICS9248-151
+SMBus probe, SM501 framebuffer all degrade gracefully).
 
 | | `qemu` | `hw` |
 |--|--------|------|
@@ -324,8 +332,8 @@ make EXTRA_CFLAGS='-DCI_TRACE_LIMITED=1'
 
 All readers are **read-only**. The firmware doesn't write to user
 data partitions under any circumstance. (NVRAM is the one
-mutable storage area, and that's its own M48T59 chip, not a
-filesystem.)
+mutable storage area, and that lives in the VT8231 RTC's 114-byte
+battery-backed CMOS RAM, not in any filesystem.)
 
 ### Long-filename support
 
@@ -586,9 +594,11 @@ A successful run prints:
   The OS handles its own writes once it's running; the firmware
   is just a loader.
 - **NVRAM persistence is HW-only**: QEMU's `pegasos2` machine
-  doesn't model the M48T59 chip, so `setenv` changes don't
-  survive `reset-all` on QEMU. They do on real hardware (the
-  M48T59 has battery backup).
+  models the VT8231 RTC and its CMOS RAM, but does not by
+  default persist the CMOS bytes across separate qemu invocations,
+  so `setenv` changes don't survive a fresh `qemu-system-ppc`
+  start on QEMU. They do on real hardware, where the VT8231 RTC
+  is backed by a CR2032 cell on the board.
 - **No USB boot**: the IDE controller is the only boot path.
   USB enumeration is left to the OS.
 - **One IDE bus, master only**: the firmware only probes

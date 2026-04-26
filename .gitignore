@@ -19,3 +19,8 @@ Thumbs.db
 # QEMU test output
 test/out/
 test/*.log
+
+# Local AOS4 test images (copied from E:\Emulators\... per
+# CONTRIBUTING.md test plan). Never bundled.
+hd1.raw
+hd0.qcow2

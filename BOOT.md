@@ -26,7 +26,7 @@ description) and `docs/07-boot-loader.md` (the spec for OS handoff).
               │   - PCI tree enum (BARs assigned)    │
               │   - x86emu self-test                 │
               │   - bochs-VGA option-ROM POST        │
-              │   - W83194 FSB / time-base calibrate │
+              │   - clockgen FSB / time-base calibrate│
               │   - decrementer + syscall self-test  │
               └────────────────┬─────────────────────┘
                                │
@@ -38,7 +38,7 @@ description) and `docs/07-boot-loader.md` (the spec for OS handoff).
               │     -> /pci@.../ide@C,1/disk@0,0     │
               │     -> ...partition packages         │
               │   - init_pegasos2[] Forth words      │
-              │   - read NVRAM (M48T59 / defaults)   │
+              │   - read NVRAM (VT8231 CMOS / defaults)│
               │   - print SmartFirmware banner       │
               └────────────────┬─────────────────────┘
                                │
@@ -187,8 +187,10 @@ Phase 1 is a deterministic hardware bring-up:
 3. PCI tree enumeration (`pci_walker.c`) prints all visible devices.
 4. x86emu self-test (boot ROM execution prep).
 5. Bochs-VGA option ROM POST through x86emu.
-6. Time-base calibration (W83194 SMBus probe with board-default
-   fallback when the chip is unreachable).
+6. Time-base calibration (clock-generator probe with board-default
+   fallback; the on-board ICS9248-151 decoder is TBD per
+   SPEC-QUESTIONS.md Q8, so all current targets fall back to the
+   board default of 133 MHz).
 7. Decrementer self-test, syscall self-test.
 8. Hand off to SmartFirmware's `main()`.
 
@@ -202,8 +204,10 @@ install_root            -- /
 install_chosen          -- /chosen + /memory pointer
 install_memory          -- /memory with reg + available
 init_options_from_nvram -- /options from compile-time defaults +
-                           live M48T59 NVRAM overlay (HW only;
-                           QEMU's pegasos2 has no M48T59 model)
+                           VT8231 RTC CMOS overlay (HW persists
+                           across power cycles via CR2032; QEMU
+                           does not persist CMOS bytes across
+                           qemu invocations by default)
 install_powerpc_cpu     -- /cpus/PowerPC,7447A@0
 install_display         -- framebuffer (when SM501 present)
 install_failsafe        -- always-on UART1 console package
@@ -256,9 +260,12 @@ Compile-time defaults live in `g_nvram[]` in
 | `boot-command` | `smart-boot` | `smart-boot` |
 | `boot-os-priority` | `amigaos,morphos,linux` | (same) |
 
-On real hardware the M48T59 NVRAM persists user `setenv` changes
-across reboots; on QEMU the chip is not modelled so each boot
-reverts to the compile-time defaults.
+On real hardware the VT8231 RTC's 114-byte battery-backed CMOS
+RAM persists user `setenv` changes across reboots (CR2032-fed);
+on QEMU the same RTC is modelled but its CMOS bytes are not
+persisted across separate qemu invocations by default, so each
+fresh `qemu-system-ppc` start reverts to the compile-time
+defaults.
 
 ## smart-boot (priority dispatcher)
 

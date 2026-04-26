@@ -448,7 +448,20 @@ the current text:
 
 ---
 
-## Q7. The Pegasos II hardware schematic shows no M48T59 chip (spec 08)
+## Q7. The Pegasos II hardware schematic shows no M48T59 chip (spec 08) [RESOLVED 2026-04-26]
+
+**Resolution:** The M48T59 driver was removed and replaced by a
+VT8231-internal-RTC driver (`machdep/pegasos2/vt8231_rtc.{c,h}`)
+that exposes the southbridge's MC146818-compatible RTC + 114
+bytes of battery-backed CMOS RAM at ISA I/O 0x70/0x71. SF's
+`machine_nvram_*` hooks now use the 114-byte CMOS window; SF
+auto-truncates writes that would exceed it. Wall-clock services
+(`get-time-of-day` / `set-time-of-day`) point at the same chip.
+Spec 08 still describes an M48T59 layout that does not exist on
+the board; the spec author is asked to rewrite it around the
+VT8231 RTC, but no further code changes are required.
+
+
 
 **Spec claim:** `docs/08-nvram.md` (whole chapter) and
 `docs/00-overview.md` line 18 identify the Pegasos II NVRAM as
@@ -524,7 +537,21 @@ mechanism may not match the actual hardware."
 
 ---
 
-## Q8. Clock generator is ICS9248-151, not Winbond W83194 (spec 00)
+## Q8. Clock generator is ICS9248-151, not Winbond W83194 (spec 00) [RESOLVED 2026-04-26]
+
+**Resolution:** The W83194-specific decoder
+(`vt8231_w83194_fsb_hz`) was removed; the public-facing function
+is now `pegasos2_clockgen_fsb_hz` and returns 0 unconditionally,
+so `timer_calibrate` falls through to `PEGASOS2_FSB_HZ_DEFAULT`
+(133 MHz, the board-strap default Genesi documents). The
+`vt8231_smbus_probe` / `vt8231_smbus_read_byte` helpers stay in
+place; a future commit can wire an ICS9248-151 register decoder
+(per the IDT/ICS public datasheet) onto them once a real board
+is available to verify against. Spec 00 / spec 05 should
+identify the chip as ICS9248-151; this is left as a docs-side
+clarification.
+
+
 
 **Spec claim:** `docs/00-overview.md` line 23 lists the board's
 clock generator as

@@ -25,16 +25,17 @@ static uint32_t s_tb_hz;
 void timer_calibrate(void)
 {
 	/*
-	 * Try the W83194 clock-synthesizer probe first. On real HW
-	 * this returns the actual FSB the board was strapped to (one
-	 * of 66/75/83/100/120/133/150/166 MHz). On QEMU the probe
-	 * fails (no VT8231 fn 4 model) and we fall back to the board
-	 * default of 133 MHz. Either way the decrementer tick is
-	 * monotonically increasing, which is what the self-test
-	 * requires; the wall-clock accuracy delta only matters on
-	 * real HW.
+	 * Ask the clock-generator probe for an actual FSB reading.
+	 * The Pegasos II clock chip is an ICS9248-151 (per the beta-5
+	 * schematic in references/) and a verified decoder for it has
+	 * not been written yet, so this currently returns 0 on every
+	 * target. timer_calibrate then falls through to the board-
+	 * default FSB of 133 MHz, which is the strap most Pegasos II
+	 * boards ship with and matches QEMU's modelled clock domain.
+	 * Once an ICS9248-151 decoder lands the probe will pick up any
+	 * non-default strapping automatically.
 	 */
-	unsigned probed = vt8231_w83194_fsb_hz();
+	unsigned probed = pegasos2_clockgen_fsb_hz();
 	s_fsb_hz     = probed ? probed : PEGASOS2_FSB_HZ_DEFAULT;
 	s_tb_hz      = s_fsb_hz / 4u;
 	_dec_reload  = s_tb_hz / 1000u;

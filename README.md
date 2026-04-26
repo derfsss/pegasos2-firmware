@@ -98,7 +98,7 @@ an `ok` prompt (default on the HW build).
 |------------------|---------------------|------------------------------------|
 | Auto-boot        | enabled, 3-second countdown | disabled |
 | What it boots    | first AmigaOS-family partition (DH0 by default) | nothing — drops to `ok` |
-| Persistence      | none — defaults reload every boot (QEMU has no real NVRAM) | yes — `setenv` changes survive reboots (M48T59 battery-backed RAM) |
+| Persistence      | none — QEMU does not preserve VT8231 RTC CMOS bytes across qemu invocations, so defaults reload every boot | yes — `setenv` changes survive reboots (VT8231 RTC's 114-byte battery-backed CMOS RAM, CR2032-fed) |
 
 If you don't press a key during the QEMU countdown, the firmware
 runs `smart-boot`, picks the highest-priority bootable partition,
@@ -160,7 +160,7 @@ ok setenv auto-boot-timeout 5000
 ok reset-all
 ```
 
-The settings are written to the M48T59 battery-backed NVRAM and
+The settings are written to the VT8231 RTC's battery-backed CMOS RAM and
 should survive power cycles. The default `boot-command` is
 `smart-boot`, which handles partition selection automatically.
 

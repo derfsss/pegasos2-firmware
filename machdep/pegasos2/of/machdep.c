@@ -24,18 +24,22 @@
  *    * machine_probe_read/write do the access unconditionally for now;
  *      wiring them through a "probe active" flag in the DSI handler is
  *      a later commit (risk #6 from the planning doc).
- *    * NVRAM (M48T59) driver is wired in. The machine_nvram_* hooks
- *      expose the 1 KiB "system partition" from spec 08 (M48T59 offsets
- *      0x0200..0x05FF) to SF. Firmware-private state, the OS-specific
- *      partition, and RTC access are deferred to later commits.
+ *    * NVRAM driver is wired to the VT8231 internal RTC's 114-byte
+ *      battery-backed CMOS RAM (indices 0x0E..0x7F). machine_nvram_*
+ *      hooks expose that window to SF. The Pegasos II beta-5
+ *      schematic shows no separate M48T59 chip on the board
+ *      (SPEC-QUESTIONS.md Q7); the earlier M48T59 driver targeted
+ *      hardware that never existed and was replaced.
  *
- *      QEMU caveat: pegasos2 in QEMU 10.2 does NOT instantiate an
- *      M48T59 (see hw/ppc/pegasos.c -- only a VT8231 built-in RTC +
- *      RTAS NVRAM hypercalls for guest Linux). Our reads land on
- *      unmapped VT8231 I/O space and return 0, so the magic check
- *      fails and SF falls back to compile-time defaults every boot
- *      -- same observable behaviour as the pre-driver stubs. The
- *      code is correct per spec 08 for real Pegasos II hardware.
+ *      QEMU caveat: pegasos2 in QEMU 10.2 models the VT8231 RTC as
+ *      an mc146818-compatible chip with read/write CMOS RAM, so SF
+ *      sees a working NVRAM window for the lifetime of a single QEMU
+ *      run, but QEMU does not by default persist the CMOS bytes to
+ *      backing storage across qemu invocations. So the user-visible
+ *      "setenv survives reboot" behaviour still differs between QEMU
+ *      and real hardware: on QEMU defaults reload on every fresh
+ *      qemu start, while a real Pegasos II keeps the CR2032-backed
+ *      bytes across power cycles.
  */
 
 #include <stdarg.h>
@@ -50,7 +54,7 @@
 #include "../pegasos2.h"
 #include "../uart16550.h"
 #include "../io.h"
-#include "../m48t59.h"
+#include "../vt8231_rtc.h"
 #include "../extint.h"
 
 /* vbprintf lives in SF's stdlib.c; declared in its stdlib.h but not
@@ -520,7 +524,7 @@ void machine_test_pass   (Environ *e)         { (void)e; }
 void machine_test_fail   (Environ *e)         { (void)e; }
 
 /* --------------------------------------------------------------- *
- *  NVRAM (M48T59) -- system partition (spec 08 §NVRAM partitioning) *
+ *  NVRAM (VT8231 internal RTC, 114 bytes of battery-backed CMOS)    *
  * --------------------------------------------------------------- */
 
 /*
@@ -536,8 +540,14 @@ void machine_test_fail   (Environ *e)         { (void)e; }
  * After the header comes the ASCII "name=value" blob and a trailing
  * NUL. nvram.c's NVRAM_HEADER is 6, NVRAM_MAX is g_nvram_size - 8.
  *
- * machine_nvram_size reports the window we expose to SF: the 1 KiB
- * system partition per spec 08 (M48T59 offsets 0x0200..0x05FF).
+ * machine_nvram_size reports the window we expose to SF: the
+ * VT8231 RTC's 114-byte general-purpose CMOS area (CMOS indices
+ * 0x0E..0x7F). 114 bytes is enough for SF's 6-byte header, a
+ * checksum, a NUL, and ~100 bytes of name=value pairs -- room for
+ * a handful of small env vars (auto-boot?, boot-os-priority,
+ * boot-command etc.) but NOT for a full nvramrc script. SF
+ * automatically truncates writes that would exceed NVRAM_MAX, and
+ * the truncation message tells the user to use a shorter value.
  *
  * machine_nvram_read loads header + payload + trailing NUL into `buf`
  * and writes the total byte count to `*len`. SF subtracts NVRAM_HEADER
@@ -555,7 +565,7 @@ uInt
 machine_nvram_size(Environ *e)
 {
 	(void)e;
-	return M48T59_SYSTEM_SIZE;
+	return VT8231_CMOS_RAM_SIZE;
 }
 
 Retcode
@@ -569,26 +579,26 @@ machine_nvram_read(Environ *e, uChar *buf, uInt *len)
 	*len = 0;
 
 	/* Peek the header to determine the payload length before reading
-	 * the rest. Lets us return early on a fresh / corrupt NVRAM
-	 * without slurping 1 KiB of 0xFF. */
-	uChar hdr0 = m48t59_read_byte(M48T59_SYSTEM_OFFSET + 0);
-	uChar hdr1 = m48t59_read_byte(M48T59_SYSTEM_OFFSET + 1);
+	 * the rest. Lets us return early on a fresh / corrupt CMOS
+	 * without slurping the whole window of 0xFF. */
+	uChar hdr0 = vt8231_rtc_read_byte(VT8231_CMOS_RAM_BASE + 0);
+	uChar hdr1 = vt8231_rtc_read_byte(VT8231_CMOS_RAM_BASE + 1);
 
 	if (hdr0 != 0xBEu || hdr1 != 0xEFu)
 		return E_NO_DEVICE;
 
-	uChar hdr2 = m48t59_read_byte(M48T59_SYSTEM_OFFSET + 2);
-	uChar hdr3 = m48t59_read_byte(M48T59_SYSTEM_OFFSET + 3);
+	uChar hdr2 = vt8231_rtc_read_byte(VT8231_CMOS_RAM_BASE + 2);
+	uChar hdr3 = vt8231_rtc_read_byte(VT8231_CMOS_RAM_BASE + 3);
 	uInt  payload_len = ((uInt)hdr2 << 8) | (uInt)hdr3;
 
 	/* Total bytes SF expects: 6 header + payload + 1 trailing NUL. */
 	uInt total = 6u + payload_len + 1u;
 
-	if (total > M48T59_SYSTEM_SIZE)
+	if (total > VT8231_CMOS_RAM_SIZE)
 		return E_NO_DEVICE;
 
 	for (uInt i = 0; i < total; i++)
-		buf[i] = m48t59_read_byte(M48T59_SYSTEM_OFFSET + i);
+		buf[i] = vt8231_rtc_read_byte(VT8231_CMOS_RAM_BASE + i);
 
 	/* Validate checksum: sum of all header+payload bytes (excluding
 	 * the trailing NUL) should fold to zero in the low 16 bits. The
@@ -612,11 +622,11 @@ machine_nvram_write(Environ *e, uChar *buf, uInt len)
 	if (buf == NULL || len == 0u)
 		return E_NO_DEVICE;
 
-	if (len > M48T59_SYSTEM_SIZE)
+	if (len > VT8231_CMOS_RAM_SIZE)
 		return E_OUT_OF_PROM;
 
 	for (uInt i = 0; i < len; i++)
-		m48t59_write_byte(M48T59_SYSTEM_OFFSET + i, buf[i]);
+		vt8231_rtc_write_byte(VT8231_CMOS_RAM_BASE + i, buf[i]);
 
 	return NO_ERROR;
 }

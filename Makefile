@@ -28,13 +28,14 @@ SF          := upstream/smartfirmware/bin/of
 SF_MACHDEP  := $(MACHDEP)/of
 
 # CONFIG_TARGET selects the runtime environment: `qemu` (default) or
-# `hw`. Identical code paths -- everything that differs (M48T59 NVRAM
-# presence, W83194 SMBus FSB probe, SM501 framebuffer, etc.) is
-# detected at runtime via probing. This flag only branches the
-# compile-time NVRAM defaults baked into init_options_from_nvram,
-# since on QEMU the M48T59 chip isn't instantiated and defaults
-# load fresh every boot, whereas real HW has battery-backed M48T59
-# that persists user `setenv` changes across reboots.
+# `hw`. Identical code paths -- everything that differs (CMOS RAM
+# persistence semantics, ICS9248-151 SMBus FSB probe, SM501
+# framebuffer, etc.) is detected at runtime via probing. This flag
+# only branches the compile-time NVRAM defaults baked into
+# init_options_from_nvram, since QEMU does not persist the VT8231
+# RTC's CMOS bytes across qemu invocations and defaults reload fresh
+# every boot, whereas real HW keeps the CR2032-backed bytes across
+# power cycles and persists user `setenv` changes.
 #
 # Defaults exposed:
 #   qemu : auto-boot? = true,  auto-boot-timeout = 3000 ms
@@ -97,7 +98,7 @@ PHASE1_OBJS := \
     $(BUILD)/uart16550.o \
     $(BUILD)/mv64361.o \
     $(BUILD)/vt8231.o \
-    $(BUILD)/m48t59.o \
+    $(BUILD)/vt8231_rtc.o \
     $(BUILD)/extint.o \
     $(BUILD)/pci_walker.o \
     $(BUILD)/x86_glue.o \

@@ -31,8 +31,17 @@ with an external citation.
 
 ## Findings recorded against this schematic
 
-- `SPEC-QUESTIONS.md` Q7 — schematic shows no M48T59 NVRAM chip;
-  only the VT8231 internal RTC + CR2032 backup is present.
-- `SPEC-QUESTIONS.md` Q8 — clock generator on the schematic is
-  `ICS9248-151`, not the Winbond W83194 referenced in the spec
-  and our code.
+- `SPEC-QUESTIONS.md` Q7 [RESOLVED] — schematic showed no M48T59
+  NVRAM chip; only the VT8231 internal RTC + CR2032 backup is
+  present. The M48T59 driver was deleted and replaced by
+  `machdep/pegasos2/vt8231_rtc.{c,h}` (114 bytes of CMOS RAM +
+  MC146818-compatible time-of-day).
+- `SPEC-QUESTIONS.md` Q8 [RESOLVED] — clock generator on the
+  schematic is `ICS9248-151`, not the Winbond W83194 the
+  earlier code targeted. The W83194 decoder was removed; a
+  proper ICS9248-151 decoder is left as a TODO and the firmware
+  falls back to the board-default 133 MHz FSB.
+- `SPEC-QUESTIONS.md` Q9 — schematic enumerates several blocks
+  the docs do not (VT6306 FireWire, 88E1111 GbE PHY, RTL8201 FE
+  PHY, VT8231 FDD/PAR/IRDA/GAME sub-blocks). Out of scope for
+  v0.5 firmware; documentation-completeness only.

@@ -22,9 +22,12 @@
 /*
  * Pegasos II board-standard clock rates. Used by timer_calibrate()
  * as the reset-time assumption when no probe has run. The real-HW
- * path for detecting an overridden FSB is a W83194 SMBus probe,
- * per docs/01-cpu-init.md §"Clock detection"; that probe is TBD
- * and will overwrite these via timer_set_fsb().
+ * path for detecting an overridden FSB is the on-board ICS9248-151
+ * clock generator over SMBus, per the schematic in references/;
+ * the decoder for that chip is not yet implemented (the earlier
+ * W83194 decoder targeted the wrong part and was removed --
+ * SPEC-QUESTIONS.md Q8). Until then timer_calibrate falls back to
+ * these defaults on every target.
  *
  * On MPC7447A the time-base counter increments at bus_clock / 4,
  * a fixed ratio (no HID0 / L2CR configuration to check).

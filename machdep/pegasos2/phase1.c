@@ -227,14 +227,15 @@ void phase1_c_main(void)
 	}
 
 	/*
-	 * Seed _dec_reload from the real FSB where possible. timer_
-	 * calibrate() probes the W83194 clock generator via VT8231
-	 * fn 4 SMBus; on QEMU (no fn 4 model) the probe returns 0
-	 * and we fall back to the board default (133 MHz). Either
-	 * way the 0x900 handler re-arms with the value set here and
-	 * the tick counter advances monotonically.
+	 * Seed _dec_reload from the FSB. timer_calibrate() asks the
+	 * clock-generator probe (ICS9248-151 on real HW, currently
+	 * unimplemented per SPEC-QUESTIONS.md Q8) for a reading and
+	 * falls back to the board default of 133 MHz when none is
+	 * available, which is the case on QEMU and on every real
+	 * board today. Either way the 0x900 handler re-arms with the
+	 * value set here and the tick counter advances monotonically.
 	 */
-	uart_puts(UART1_BASE, "\nClock calibration (W83194 SMBus probe w/ board-default fallback):\n");
+	uart_puts(UART1_BASE, "\nClock calibration (board-default; ICS9248-151 probe TBD):\n");
 	timer_calibrate();
 	uart_puts(UART1_BASE, "  FSB = ");
 	uart_put_hex32(UART1_BASE, timer_fsb_hz());

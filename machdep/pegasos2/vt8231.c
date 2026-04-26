@@ -217,38 +217,27 @@ int vt8231_smbus_read_byte(unsigned smbus_io_base,
 	return -1;  /* timeout */
 }
 
-#define W83194_SMBUS_ADDR   0x69u
-#define W83194_REG_FSB_CFG  0x03u  /* Pegasos2 reads CPU-FSB select here
-                                    * per Genesi documentation. */
-
-unsigned vt8231_w83194_fsb_hz(void)
+/*
+ * Clock-generator probe. The schematic identifies the part as an
+ * ICS9248-151, not the Winbond W83194 the early drafts of the docs
+ * named (SPEC-QUESTIONS.md Q8). The two families have incompatible
+ * register layouts: blindly applying the W83194 decode to whatever
+ * answers SMBus address 0x69 on real hardware would corrupt the FSB
+ * estimate and propagate the error into every downstream timer
+ * calibration (decrementer reload, busclk, MV64361 SDRAM refresh).
+ *
+ * Until an ICS9248-151 decoder has been written from its public
+ * datasheet and verified on a real board, this function returns 0
+ * and leaves timer_calibrate() to fall back to PEGASOS2_FSB_HZ_DEFAULT
+ * (133 MHz, the board-strapped value documented by Genesi). The
+ * board can run with a wrong FSB estimate at most by a few percent
+ * for non-default strappings; correctness on the default strap is
+ * exact.
+ *
+ * The vt8231_smbus_probe / vt8231_smbus_read_byte primitives above
+ * are kept ready for that future decoder.
+ */
+unsigned pegasos2_clockgen_fsb_hz(void)
 {
-	unsigned base;
-	if (vt8231_smbus_probe(&base) != 0)
-		return 0;
-
-	int fsb_cfg = vt8231_smbus_read_byte(base, W83194_SMBUS_ADDR,
-	                                     W83194_REG_FSB_CFG);
-	if (fsb_cfg < 0)
-		return 0;
-
-	/* Bits 2..0 of register 0x03 select the FSB frequency on the
-	 * W83194 variants used by Pegasos II. Values per the Winbond
-	 * datasheet:
-	 *   0b000 ->  66 MHz
-	 *   0b001 ->  75 MHz
-	 *   0b010 ->  83 MHz
-	 *   0b011 -> 100 MHz
-	 *   0b100 -> 120 MHz
-	 *   0b101 -> 133 MHz  (Pegasos II default)
-	 *   0b110 -> 150 MHz
-	 *   0b111 -> 166 MHz
-	 * A future revision could read the full frequency table from
-	 * a Pegasos2-specific I2C leaf; for now we support the values
-	 * documented in the boardsource Genesi material. */
-	static const unsigned fsb_table[8] = {
-		 66666667u,  75000000u,  83000000u, 100000000u,
-		120000000u, 133000000u, 150000000u, 166666667u
-	};
-	return fsb_table[fsb_cfg & 0x07u];
+	return 0;
 }
