@@ -485,7 +485,8 @@ static int cdsig_ok(const uByte *b)
  * Locate the first ATAPI (CD) child under the IDE controller.
  * Returns NULL if no CD attached.
  */
-static Package *find_first_cd(Environ *e)
+/* Non-static so smart_boot.c can iterate ATAPI media directly. */
+Package *find_first_cd(Environ *e)
 {
 	Package *ide = find_ide_controller(e);
 	if (ide == NULL) return NULL;

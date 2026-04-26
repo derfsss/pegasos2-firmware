@@ -36,6 +36,7 @@
 #include "defs.h"
 
 extern Package *find_first_hd_disk(Environ *e);
+extern Package *find_first_cd(Environ *e);
 
 /* --- DosType classification ------------------------------------ */
 
@@ -176,6 +177,65 @@ loader_morphos(Environ *e, Package *part)
 	return E_UNSUPPORTED_FILESYS;
 }
 
+/* --- Per-family CD-media loaders ------------------------------- *
+ *
+ * Called when the per-family HD walk found no candidate but a CD
+ * is in the drive. The CD scan is filename-driven: we ask SF to
+ * `boot cd <path>` and let the existing ELF/handoff path do the
+ * work. SF returns a non-NO_ERROR retcode if the file isn't on
+ * the volume, so we just chain candidate filenames in priority
+ * order until one sticks.
+ *
+ * Filename choices come from the install-media conventions of
+ * each OS family:
+ *   amigaos: `/amigaboot.of` is the standard AOS4 OpenFirmware
+ *            bootstrap. AOS3 doesn't ship CDs; ignore.
+ *   linux:   `/boot/vmlinux` (Debian PPC live), then `/vmlinux`
+ *            (custom), then `/yaboot` (yaboot-aware media). All
+ *            are ELF; SF's ELF path takes them.
+ *   morphos: `/boot.img` is the MorphOS install-CD bootstrap.
+ *            Untested -- the loader_morphos stub handles HD;
+ *            on CD we still try, so a future MorphOS loader can
+ *            adopt the same path.
+ */
+
+static Retcode try_cd_boot(Environ *e, const char *path)
+{
+	Byte cmd[64];
+	/* bprintf's return value is unreliable (it returns the post-
+	 * loop strlen of an already-NUL-terminated walking pointer,
+	 * which is 0 -- documented in machdep.c's dprintf comment).
+	 * Walk the buffer ourselves for the actual length. */
+	bprintf((char *)cmd, "boot cd %s", path);
+	int n = (int)strlen((char *)cmd);
+	return interp_text(e, cmd, n);
+}
+
+static Retcode
+loader_amigaos_cd(Environ *e)
+{
+	cprintf(e, "smart-boot: trying AmigaOS bootstrap from CD\n");
+	return try_cd_boot(e, "amigaboot.of");
+}
+
+static Retcode
+loader_linux_cd(Environ *e)
+{
+	cprintf(e, "smart-boot: trying Linux bootstrap from CD\n");
+	Retcode r;
+	if ((r = try_cd_boot(e, "boot/vmlinux"))     == NO_ERROR) return r;
+	if ((r = try_cd_boot(e, "vmlinux"))          == NO_ERROR) return r;
+	if ((r = try_cd_boot(e, "yaboot"))           == NO_ERROR) return r;
+	return E_UNSUPPORTED_FILESYS;
+}
+
+static Retcode
+loader_morphos_cd(Environ *e)
+{
+	cprintf(e, "smart-boot: trying MorphOS bootstrap from CD\n");
+	return try_cd_boot(e, "boot.img");
+}
+
 /* --- Forth entry point ----------------------------------------- */
 
 /*
@@ -189,6 +249,20 @@ loader_morphos(Environ *e, Package *part)
  * loader, fall back to a plain `boot` so the user still sees SF's
  * default load attempt against boot-device + boot-file.
  */
+/*
+ * Resolve a comma-separated priority token to a canonical family
+ * name, or return NULL if the token is unknown. Caller owns the
+ * "skipped" diagnostic.
+ */
+static const char *
+resolve_family_token(const Byte *tok, int len)
+{
+	if (os_family_match(tok, len, "amigaos")) return "amigaos";
+	if (os_family_match(tok, len, "linux"))   return "linux";
+	if (os_family_match(tok, len, "morphos")) return "morphos";
+	return NULL;
+}
+
 CC(f_smart_boot)
 {
 	/* Pull priority list. get_config returns the bare value bytes
@@ -199,69 +273,101 @@ CC(f_smart_boot)
 		prio = (Byte *)fallback;
 
 	Package *hd = find_first_hd_disk(e);
-	if (hd == NULL) {
-		cprintf(e, "smart-boot: no HD; falling back to plain boot\n");
-		const char *cmd = "boot";
-		return interp_text(e, (Byte *)cmd, strlen(cmd));
-	}
+	Package *cd = find_first_cd(e);
 
-	/* Walk comma-separated priority list. Tokens are trimmed of
-	 * leading/trailing whitespace; case-sensitive on the family
-	 * name itself, but a few aliases are recognised in
-	 * os_family_match(). */
-	const Byte *cur = prio;
-	while (*cur) {
-		while (*cur == ' ' || *cur == '\t') cur++;
-		const Byte *tok_start = cur;
-		while (*cur && *cur != ',' && *cur != ' ' && *cur != '\t')
-			cur++;
-		int tok_len = (int)(cur - tok_start);
-		while (*cur == ' ' || *cur == '\t') cur++;
-		if (*cur == ',') cur++;
+	/*
+	 * Pass 1: HD partition table. For each family in priority
+	 * order, look for an RDB partition with a matching DosType
+	 * and a non-negative BootPri. If any HD install matches,
+	 * boot it.
+	 */
+	if (hd != NULL) {
+		const Byte *cur = prio;
+		while (*cur) {
+			while (*cur == ' ' || *cur == '\t') cur++;
+			const Byte *tok = cur;
+			while (*cur && *cur != ',' && *cur != ' ' && *cur != '\t')
+				cur++;
+			int tok_len = (int)(cur - tok);
+			while (*cur == ' ' || *cur == '\t') cur++;
+			if (*cur == ',') cur++;
+			if (tok_len == 0) continue;
 
-		if (tok_len == 0) continue;
+			const char *family = resolve_family_token(tok, tok_len);
+			if (family == NULL) {
+				cprintf(e, "smart-boot: unknown family `%S` "
+				    "-- skipped\n", tok, (Int)tok_len);
+				continue;
+			}
 
-		const char *family;
-		if      (os_family_match(tok_start, tok_len, "amigaos"))
-			family = "amigaos";
-		else if (os_family_match(tok_start, tok_len, "linux"))
-			family = "linux";
-		else if (os_family_match(tok_start, tok_len, "morphos"))
-			family = "morphos";
-		else {
-			cprintf(e,
-			    "smart-boot: unknown family `%S` -- skipped\n",
-			    tok_start, (Int)tok_len);
-			continue;
+			Package *cand = pick_partition_for_family(hd, family);
+			if (cand == NULL) continue;
+
+			Byte *pname = NULL; Int pnlen = 0;
+			(void)prop_get_str(cand->props,
+			                   (Byte *)"partition-name", CSTR,
+			                   &pname, &pnlen);
+			cprintf(e, "smart-boot: picking %s partition %S\n",
+			        family,
+			        pname ? pname : (Byte *)"?",
+			        pname ? pnlen : 1);
+
+			Retcode r;
+			if (strcmp(family, "amigaos") == 0)
+				r = loader_amigaos(e, cand);
+			else if (strcmp(family, "linux") == 0)
+				r = loader_linux(e, cand);
+			else
+				r = loader_morphos(e, cand);
+
+			if (r == NO_ERROR)
+				return NO_ERROR;     /* unreachable on success */
+			/* loader failed; try next family */
 		}
-
-		Package *cand = pick_partition_for_family(hd, family);
-		if (cand == NULL) continue;
-
-		Byte *pname = NULL; Int pnlen = 0;
-		(void)prop_get_str(cand->props,
-		                   (Byte *)"partition-name", CSTR,
-		                   &pname, &pnlen);
-		cprintf(e, "smart-boot: picking %s partition %S\n",
-		        family,
-		        pname ? pname : (Byte *)"?",
-		        pname ? pnlen : 1);
-
-		Retcode r;
-		if (strcmp(family, "amigaos") == 0)
-			r = loader_amigaos(e, cand);
-		else if (strcmp(family, "linux") == 0)
-			r = loader_linux(e, cand);
-		else
-			r = loader_morphos(e, cand);
-
-		if (r == NO_ERROR)
-			return NO_ERROR;     /* unreachable in success */
-		/* loader failed; try next family */
 	}
 
-	cprintf(e, "smart-boot: no priority match, "
-	        "falling back to plain `boot`\n");
+	/*
+	 * Pass 2: CD media. If a CD is in the drive, try each
+	 * family's bootstrap filename in priority order. Per-family
+	 * loader knows the conventional filenames for that OS's
+	 * install/live media; SF returns a non-NO_ERROR retcode if
+	 * the file isn't on the volume and we move on.
+	 */
+	if (cd != NULL) {
+		const Byte *cur = prio;
+		while (*cur) {
+			while (*cur == ' ' || *cur == '\t') cur++;
+			const Byte *tok = cur;
+			while (*cur && *cur != ',' && *cur != ' ' && *cur != '\t')
+				cur++;
+			int tok_len = (int)(cur - tok);
+			while (*cur == ' ' || *cur == '\t') cur++;
+			if (*cur == ',') cur++;
+			if (tok_len == 0) continue;
+
+			const char *family = resolve_family_token(tok, tok_len);
+			if (family == NULL) continue; /* already warned in pass 1 */
+
+			Retcode r;
+			if (strcmp(family, "amigaos") == 0)
+				r = loader_amigaos_cd(e);
+			else if (strcmp(family, "linux") == 0)
+				r = loader_linux_cd(e);
+			else
+				r = loader_morphos_cd(e);
+
+			if (r == NO_ERROR)
+				return NO_ERROR;     /* unreachable on success */
+			/* try next family */
+		}
+	}
+
+	if (hd == NULL && cd == NULL)
+		cprintf(e, "smart-boot: no HD or CD; "
+		        "falling back to plain boot\n");
+	else
+		cprintf(e, "smart-boot: no priority match on HD or CD; "
+		        "falling back to plain `boot`\n");
 	const char *cmd = "boot";
 	return interp_text(e, (Byte *)cmd, strlen(cmd));
 }
