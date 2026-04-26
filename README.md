@@ -45,15 +45,19 @@ a v1.0 release that has been validated on real hardware.**
 
 ## Status
 
-| | works |
+| | status |
 |--|--|
-| Boot to `ok` prompt on QEMU `pegasos2` | ✅ |
-| Boot AmigaOS 4 from a hard drive (FFS2 / SFS) | ✅ |
-| PCI bus + PCI-to-PCI bridge enumeration | ✅ |
-| VT8231 IDE (HD + CD-ROM) | ✅ |
-| Real hardware bring-up | 🚧 (not yet validated on metal) |
-| Linux loader | 📋 (framework in place, kernel loader not written) |
-| MorphOS loader | 📋 (framework in place, loader not written) |
+| Boot to `ok` prompt on QEMU `pegasos2` | ✅ tested |
+| Hand off to AmigaOS 4's `amigaboot.of` from FFS2 / SFS | ✅ tested in QEMU |
+| PCI bus + PCI-to-PCI bridge enumeration | ✅ tested in QEMU |
+| VT8231 IDE controller (HD + CD-ROM detection) | ✅ tested in QEMU |
+| Real hardware bring-up | 🚧 not yet validated on metal |
+| Linux loader | 📋 framework in place, loader not written |
+| MorphOS loader | 📋 framework in place, loader not written |
+
+(AmigaOS 4 itself is not part of this firmware. The firmware loads
+`amigaboot.of` — the AOS4 bootloader file present at the root of
+any AOS4 install disk — and hands off to it.)
 
 A 512 KiB binary that drops into the flash socket; 1 GiB of DRAM
 on QEMU is sufficient (`-m 1024`); real Pegasos II boards ship
@@ -117,27 +121,35 @@ If you have multiple bootable partitions and want a specific one:
 ok boot hd:0 amigaboot.of bootdevice=DH1
 ```
 
-### Booting MorphOS manually
+### Booting MorphOS manually (untested)
 
-```
-ok boot hd:0 morphos.of
-```
+The firmware doesn't include a MorphOS-specific loader yet. In
+principle the same generic ELF-handoff path that works for
+amigaboot.of should also load MorphOS' own bootloader (place it
+at the partition root and try `boot hd:0 <loader-name>`), but
+this has not been validated against a real MorphOS install. If
+you try it, please open an issue with the result.
 
-(MorphOS' equivalent of amigaboot.of; place it at the partition
-root.)
+### Booting Linux manually (untested)
 
-### Booting Linux manually
-
-For now, load a kernel ELF directly:
+The firmware doesn't include a Linux loader yet. The generic
+`boot` command can load a raw ELF, so a Linux PowerPC kernel
+in ELF form might be transferred to with
 
 ```
 ok boot hd:0 /boot/vmlinux
 ```
 
-A more capable Linux loader (kernel + initrd + cmdline, yaboot-style)
-is on the roadmap.
+— but the Linux PowerPC boot-time register conventions have
+not been wired into our handoff code, and there is no initrd /
+cmdline path. A proper yaboot-style loader is on the roadmap.
 
 ### Auto-booting on real hardware
+
+> ⚠️ The instructions in this section describe how the firmware
+> *is designed* to behave on real hardware. The codebase has not
+> yet been validated on a physical Pegasos II board; treat the
+> below as a recipe to test, not a recipe known to work.
 
 By default the HW build sits at the `ok` prompt. To make it
 auto-boot AmigaOS 4 on every power-up:
@@ -148,9 +160,9 @@ ok setenv auto-boot-timeout 5000
 ok reset-all
 ```
 
-Those settings are saved in the M48T59 battery-backed NVRAM and
-survive power cycles. The default `boot-command` is `smart-boot`,
-which handles partition selection automatically.
+The settings are written to the M48T59 battery-backed NVRAM and
+should survive power cycles. The default `boot-command` is
+`smart-boot`, which handles partition selection automatically.
 
 To prefer Linux over AmigaOS when both are installed:
 

@@ -120,7 +120,7 @@ finer-grained selection if needed.
 
 | family | loader | status |
 |--------|--------|--------|
-| `amigaos` | `boot hd:0 amigaboot.of` (amigaboot's own boot menu picks the actual partition) | working |
+| `amigaos` | `boot hd:0 amigaboot.of` (amigaboot's own boot menu picks the actual partition) | working in QEMU; real-hardware validation pending |
 | `linux`   | not yet implemented; smart-boot prints a notice and falls through to the next family | placeholder |
 | `morphos` | not yet implemented; smart-boot prints a notice and falls through | placeholder |
 
@@ -348,10 +348,14 @@ mainly to FFS2 on large partitions, where the FS-block size is
 
 ## OS loader support
 
-### AmigaOS 4 (working)
+### AmigaOS 4 (working in QEMU; real-hardware validation pending)
 
-Boots via `amigaboot.of` placed at the partition root. The
-firmware:
+Boots via `amigaboot.of` placed at the partition root.
+`amigaboot.of` is property of Hyperion Entertainment and is not
+distributed with this firmware; users provide it themselves on
+their boot disk (it ships on every AmigaOS 4 install medium).
+
+The firmware:
 
 1. Loads `/amigaboot.of` (an ELF) into memory at 0x200000.
 2. Sets the register state per the spec-07 contract: BATs,
@@ -572,7 +576,9 @@ A successful run prints:
   serial.
 - **Linux + MorphOS loaders are placeholders**: smart-boot
   recognises and routes to them, but the loader bodies are
-  not yet implemented. AmigaOS works fully.
+  not yet implemented. The AmigaOS 4 path (hand-off to
+  amigaboot.of) is the only loader exercised end-to-end, and
+  only in QEMU.
 - **Real-hardware validation pending**: the firmware compiles
   for HW (`make CONFIG_TARGET=hw`) and the runtime probes are
   in place, but no real Pegasos II board has flashed it yet.
@@ -590,7 +596,8 @@ A successful run prints:
   bus are easy extensions, but not yet wired.)
 - **`auto-boot-timeout` granularity is 1000ms** in the
   user-facing countdown, but the underlying poll is 10ms.
-- **`amigaboot.of` is not shipped with the firmware** — it
-  must be present at the boot partition's root. AmigaOS 4
-  install media include it; for fresh installs it can be
-  copied from any AOS4 distribution.
+- **`amigaboot.of` is not, and cannot be, shipped with the
+  firmware** — it is property of Hyperion Entertainment.
+  Users provide it themselves: every AmigaOS 4 install medium
+  contains a copy at its root, which gets installed onto the
+  hard drive's boot partition during a normal AOS4 install.
